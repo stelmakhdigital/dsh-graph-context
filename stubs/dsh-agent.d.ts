@@ -16,6 +16,13 @@ declare module '@deepseek-ai/dsh-agent' {
     readonly createdAt: number
     /** Absolute working directory the session was created in, if any. */
     readonly cwd?: string
+    /**
+     * Subagent marker (P2b, verified 2026-09-13 against
+     * packages/core/agent/src/index.ts: `origin?: 'subagent'`,
+     * `parentSession?: SessionId`).
+     */
+    readonly origin?: 'subagent'
+    readonly parentSession?: SessionId
     readonly [key: string]: unknown
   }
 
@@ -30,11 +37,17 @@ declare module '@deepseek-ai/dsh-agent' {
    * Public live-agent handle. The plugin reads `id` (state keying),
    * `session.header.cwd` (repo resolution), and calls `inject` to queue
    * model-facing context for the next request (never a wake-up).
+   *
+   * ANTI-DRIFT: `parentAgent` verified 2026-09-13 against the host
+   * (packages/core/agent/src/index.ts — `readonly parentAgent?: Agent`,
+   * present for child ownership, absent for the session's root agent).
    */
   export interface Agent {
     readonly id: SessionId
     readonly status: AgentStatus
     readonly session: Session
+    /** The spawning agent for subagents; undefined for the session root agent. */
+    readonly parentAgent?: Agent
     /** Queue model-facing context for the next pre-step without waking the driver. */
     inject(message: UserMessage): void
     /** Submit steering for the nearest step. */

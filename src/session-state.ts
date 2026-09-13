@@ -43,6 +43,10 @@ export interface SessionGraphState {
   graphToolCalls: number
   /** The blind-search nudge was sent for this (session, repo) (P2a). */
   nudgeSent: boolean
+  /** Last observed compaction id for this (session, repo) (P2b, spec #6). */
+  lastCompactionId?: string
+  /** Compaction id whose one-shot map re-inject has not been consumed yet (P2b). */
+  compactionPending?: string
 }
 
 /** djb2 over the prompt (truncated): a cheap, stable dedupe key. */
@@ -107,6 +111,29 @@ export class SessionStateStore {
     if (state.nudgeSent) return false
     state.nudgeSent = true
     return true
+  }
+
+  /**
+   * Observe a compaction (P2b, spec #6): a NEW compaction id arms a one-shot
+   * map re-inject for this (session, repo); re-observing the same id does not
+   * re-arm (the summary event is replayed across listeners).
+   */
+  markCompaction(sessionId: string, gitRoot: string | undefined, compactionId: string): void {
+    const state = this.get(sessionId, gitRoot)
+    if (state.lastCompactionId === compactionId) return
+    state.lastCompactionId = compactionId
+    state.compactionPending = compactionId
+  }
+
+  /**
+   * Take the pending compaction re-inject (P2b): returns the compaction id
+   * exactly once, then clears it. Undefined when nothing is pending.
+   */
+  takePendingCompaction(sessionId: string, gitRoot: string | undefined): string | undefined {
+    const state = this.states.get(SessionStateStore.key(sessionId, gitRoot))
+    const pending = state?.compactionPending
+    if (state !== undefined && state.compactionPending !== undefined) state.compactionPending = undefined
+    return pending
   }
 
   /** Whether a hit key was already injected in this (session, repo). */

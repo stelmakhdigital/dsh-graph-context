@@ -57,7 +57,7 @@ P2a refines the push for local models, each behind its own flag:
 - **Nudge, not a ban** (`nudgeOnBlindSearch`): a wide `grep`/`glob` (no path narrowing) before any graph tool queues one short reminder for the next request — the search itself is never blocked.
 - **Monorepo scope** (`scopeFromLastEdit`): after an edit, the next retrieval is scoped (`ask --in <top-level-dir>`) to the last edited file's directory. The hint is a *relative* path (the engine's basename weakness is corrected here).
 - **Local metrics** (`metrics`): accepted graph-tool reads vs raw source reads per session land in `$DSH_HOME/context-graph-stats.json` — a local file only, nothing is ever POSTed (see Privacy below).
-- **Wiring guard** (`guardWiringReads`, opt-in): a raw read of `graft/.graph/*` is denied with a pointer to the `graft_*` tools.
+- **Wiring guard** (`guardWiringReads`, opt-in): a raw read of `graft/.graph/*` is denied with a pointer to the `graph_*` tools.
 
 ## Configuration
 
@@ -83,6 +83,9 @@ Defaults in the bundle overlay (`cordis.patch.yml`) enable the full stack; an em
 | `scopeFromLastEdit` | `false` | (P2a) scope the next pre-step `ask` to the top-level dir of the last edited file (monorepo benefit; off by default so single-package repos keep repo-wide retrieval). |
 | `metrics` | `true` | (P2a) local per-session graph-vs-source counters in `$DSH_HOME/context-graph-stats.json`. Local only — never a network POST. |
 | `guardWiringReads` | `false` | (P2a) deny raw reads of `graft/.graph/*` with a tool hint. The textual guidance already lives in the system section and skill; the hard guard is opt-in. |
+| `injectSubagentMap` | `true` | (P2b) inject the short repo map into subagents on `agent/created` (budget `maxInjectBytes / 2`), so an explore subagent in a graphed repo does not repeat the parent's cold-grep cycle. |
+| `reinjectAfterCompaction` | `true` | (P2b) after the host compacts the session history, re-inject the short map once at the next pre-step — the session-start orientation survives compaction. |
+| `toolOrder` | `true` | (P2b) list the graph tools first in the assembled prompt (`system-prompt/assemble`); a no-op where the host does not expose that event. |
 
 User overlay (a patch replaces a row's **entire** config — restate every key you want to keep), e.g. from `cordis.yml.example`:
 

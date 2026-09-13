@@ -1,6 +1,6 @@
 # Roadmap: dsh-context-graph
 
-Обновлено: 2026-09-13 · Статус: **v0.4.0 выпущен** (P2a + ренейм token-запрета «graft» по решению владельца; репо перечислено с чистого листа); **стоп до P2b/P2c** (change control)
+Обновлено: 2026-09-13 · Статус: **v0.5.0 выпущен** (P2b: host-поверхности #5/#6/#11); **стоп до P2c** (change control)
 Цель: P0 работает в `dsh web` — агент читает построенную карту репо, а не грейпит вслепую · KPI: см. PROJECT_MEMORY §2
 
 ## Фазы
@@ -18,7 +18,7 @@
 | 8 Development (P2a) | ✅ 2026-09-13 | M7: P2a-задачи ниже | Пакет #1 injectMode, #2 nudge, #8 scopeFromLastEdit, #12 wiring-guard, #16 metrics, #14 fetch-тест, #13/#15 доки; 175 тестов + e2e 3/3 |
 | 9 Release (P2a) | ✅ 2026-09-13 | M8 | tarball `0.4.0` (0.3.0 не публиковался — в него вошёл ренейм), install web+cg, live-прогон (web-бут + headless exit 0), отчёт §«Отчёт P2a»; **стоп до P2b/P2c** |
 | 10 Release (rename v0.4.0) | ✅ 2026-09-13 | M9 | Токен «graft» убран из всего собственного именования (tools `graph_*`, `graphPath`, `GRAPH_*`, скилл `graph/`, ошибки, env, доки); 175 тестов + e2e 3/3; tarball 0.4.0 в web+cg; репо перечислено с чистого листа (история удалена по команде владельца) |
-| P2b (host-поверхности) | ⬜ | — | #6 compaction re-inject, #5 subagent-карта, #11 toolOrder — после сверки событий/API хоста |
+| P2b (host-поверхности) | ✅ 2026-09-13 | M10 | Сверка API хоста: `agent/created` (`agent.parentAgent`), `session/event` (`compaction/summary|prune`, прецедент goal/todo), `system-prompt/assemble` (`assembly.tools`); 3 флага конфига (deault on), 24 новых теста (199 всего), e2e 3/3; v0.5.0 в web+cg, live-прогон зелёный |
 | P2c (тяжёлые фичи) | ⬜ | — | #3 graph_blast, #7 graph_enrich (--deep local), #17 watcher, #4 Code Mode — проверка API хоста |
 | P2 учтено частично | ✅ | — | #9 (state по (sessionId,gitRoot) — P0), #10 (no-git → no-op — P0), #12 текстовая часть (system section + skill), #14 (fetch-тест — P2a) |
 
@@ -100,6 +100,8 @@ NFR: без `any` в публичных API; хуки не ходят в сет�
 | 2026-09-13 | Профили `web`/`cg` после переустановки конфигурации владельцем: плагин переустановлен в `web` (tarball 0.3.0), `cg` воссоздан из headless-шаблона + плагин | агент | переустановка конфига стёрла plugin-регистрации (bundles `[]`, node_modules пуст) |
 | 2026-09-13 | **Ренейм v0.4.0: токен «graft» в собственном именовании проекта запрещён** (tools `graph_*`, `graphPath`, `GRAPH_CLI`/`GRAPH_*`, скилл `skills/graph/`, все доки). Описка в записи 2026-09-12 («draft») исправлена. Внешний движок `@nanonets/graft` (пакет, бинарник, каталог `graft/`, его env) цитируется по реальному имени как зависимость | владелец | явная команда владельца (2026-09-13); ломающее для выпущенных 0.1.1/0.2.0/0.3.0-названий, поэтому minor-bump 0.4.0 |
 | 2026-09-13 | **История удалённого репо удалена полностью** — новый первый коммит с чистого листа (orphan), локальный `master` оставлен как бэкап | владелец | команда владельца (2026-09-13) |
+| 2026-09-13 | P2b-старт после v0.4.0: «продолжай» владельца = явная команда продолжить проект (change control) | агент | roadmap: P2b — следующий этап после P2a |
+| 2026-09-13 | P2b-контракты сверены с реальным хостом до TDD: субагенты — `ctx.on('agent/created')` + `agent.parentAgent` (root агент — без parentAgent); компакция — `ctx.on('session/event')` на `compaction/summary`/`compaction/prune` (durable session-события; прецедент подписки — goal/todo/token-meter); toolOrder — waterfall `system-prompt/assemble` с `assembly.tools: ToolSchema[]` | агент | спека #5/#6/#11: «найди актуальное имя», «не ломай деплой, если API нет» |
 
 ## Отчёт P0 — критерии приёмки (2026-09-12, профиль `cg` = headless-шаблон)
 

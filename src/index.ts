@@ -88,6 +88,24 @@ export interface Config {
    * and the skill; the hard guard is opt-in.
    */
   guardWiringReads: boolean
+  /**
+   * Inject the short repo map into SUBAGENTS on `agent/created` (P2b,
+   * spec #5), so an explore subagent in a graphed repo does not repeat the
+   * parent's cold-grep cycle. Budget is `maxInjectBytes / 2`.
+   */
+  injectSubagentMap: boolean
+  /**
+   * Re-inject the short map once, at the next pre-step, after the host
+   * compacts the session history (P2b, spec #6) — the session-start
+   * orientation survives compaction.
+   */
+  reinjectAfterCompaction: boolean
+  /**
+   * List the graph tools first in the assembled prompt (P2b, spec #11),
+   * via the `system-prompt/assemble` waterfall; a no-op where the host does
+   * not expose that event.
+   */
+  toolOrder: boolean
 }
 
 /** Schemastery validation for {@link Config}; defaults live on the fields. */
@@ -111,6 +129,9 @@ export const Config: z<Config> = z.object({
   scopeFromLastEdit: z.boolean().default(false),
   metrics: z.boolean().default(true),
   guardWiringReads: z.boolean().default(false),
+  injectSubagentMap: z.boolean().default(true),
+  reinjectAfterCompaction: z.boolean().default(true),
+  toolOrder: z.boolean().default(true),
 })
 
 /**
@@ -143,6 +164,9 @@ export function normalizeConfig(raw: Partial<Config> | null | undefined): Config
     scopeFromLastEdit: source.scopeFromLastEdit ?? false,
     metrics: source.metrics ?? true,
     guardWiringReads: source.guardWiringReads ?? false,
+    injectSubagentMap: source.injectSubagentMap ?? true,
+    reinjectAfterCompaction: source.reinjectAfterCompaction ?? true,
+    toolOrder: source.toolOrder ?? true,
   }
   return out
 }
@@ -220,6 +244,9 @@ export function apply(ctx: Context, rawConfig: Config): void {
     scopeFromLastEdit: config.scopeFromLastEdit,
     metrics: config.metrics,
     guardWiringReads: config.guardWiringReads,
+    injectSubagentMap: config.injectSubagentMap,
+    reinjectAfterCompaction: config.reinjectAfterCompaction,
+    toolOrder: config.toolOrder,
   }
   registerHooks(ctx, hooksConfig, {
     state,
@@ -261,7 +288,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     logger.info(`dsh-context-graph: skill ready at ${skill.path}`)
   }
 
-  logger.info(`dsh-context-graph: loaded (tools=${config.tools}, sessionMap=${config.injectSessionMap}, autoBuild=${config.autoBuild}, promptHits=${config.injectPromptHits}/${config.injectMode}, blast=${config.injectBlastRadius}, autoSync=${config.autoSync}, nudge=${config.nudgeOnBlindSearch}, scope=${config.scopeFromLastEdit}, metrics=${config.metrics}, guardWiring=${config.guardWiringReads})`)
+  logger.info(`dsh-context-graph: loaded (tools=${config.tools}, sessionMap=${config.injectSessionMap}, autoBuild=${config.autoBuild}, promptHits=${config.injectPromptHits}/${config.injectMode}, blast=${config.injectBlastRadius}, autoSync=${config.autoSync}, nudge=${config.nudgeOnBlindSearch}, scope=${config.scopeFromLastEdit}, metrics=${config.metrics}, guardWiring=${config.guardWiringReads}, subagentMap=${config.injectSubagentMap}, compactionReinject=${config.reinjectAfterCompaction}, toolOrder=${config.toolOrder})`)
 }
 
 // Re-exported for consumers that compose the plugin programmatically (e.g.

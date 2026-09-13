@@ -93,8 +93,9 @@ describe('index.ts — plugin contract', () => {
     expect(keys).toEqual([
       'autoBuild', 'autoSync', 'buildTimeoutMs', 'deep', 'editToolNames', 'graphPath',
       'guardWiringReads', 'injectBlastRadius', 'injectMode', 'injectPromptHits',
-      'injectSessionMap', 'maxInjectBytes', 'metrics', 'nudgeOnBlindSearch',
-      'promptMinChars', 'scopeFromLastEdit', 'timeoutMs', 'tools',
+      'injectSessionMap', 'injectSubagentMap', 'maxInjectBytes', 'metrics',
+      'nudgeOnBlindSearch', 'promptMinChars', 'reinjectAfterCompaction',
+      'scopeFromLastEdit', 'timeoutMs', 'toolOrder', 'tools',
     ].sort())
   })
 
@@ -105,6 +106,14 @@ describe('index.ts — plugin contract', () => {
     expect(config.scopeFromLastEdit).toBe(false) // monorepo benefit, opt-in
     expect(config.metrics).toBe(true)
     expect(config.guardWiringReads).toBe(false) // hard guard is opt-in
+  })
+
+  it('normalizeConfig fills the P2b defaults (spec: each extension behind its flag)', () => {
+    const config = normalizeConfig({})
+    expect(config.injectSubagentMap).toBe(true)
+    expect(config.reinjectAfterCompaction).toBe(true)
+    expect(config.toolOrder).toBe(true)
+    expect(normalizeConfig({ toolOrder: false }).toolOrder).toBe(false)
   })
 
   it('normalizeConfig rejects an invalid injectMode and falls back to sourced', () => {

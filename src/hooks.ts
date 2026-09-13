@@ -25,11 +25,12 @@
  *   `graft build` detached under the repo lock, without blocking the turn.
  */
 import { isAbsolute, join, relative, resolve } from 'node:path'
-import type { Context } from '@deepseek-ai/cordis'
-import type { Agent, PreStepDecision, SessionStartSource } from '@deepseek-ai/dsh-agent'
+import type { AssembleContext, Context, PromptAssembly, SessionEventLike } from '@deepseek-ai/cordis'
+import type { Agent, PreStepDecision, Session, SessionStartSource } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { GraphError, runGraphJson, spawnDetachedBuild } from './cli.ts'
+import { TOOL_NAMES } from './tools.ts'
 import {
   renderBlastRadius,
   renderMap,
@@ -80,6 +81,12 @@ export interface HooksConfig {
   metrics: boolean
   /** Deny raw reads of graft/.graph/* with a tool hint (P2a, opt-in). */
   guardWiringReads: boolean
+  /** Short map into subagents on `agent/created` (P2b, spec #5). */
+  injectSubagentMap: boolean
+  /** One-shot map re-inject after host compaction (P2b, spec #6). */
+  reinjectAfterCompaction: boolean
+  /** List graph tools first in the assembled prompt (P2b, spec #11). */
+  toolOrder: boolean
 }
 
 export interface HooksDeps {
@@ -294,16 +301,23 @@ export async function handlePreStep(
 ): Promise<PreStepDecision> {
   // Downstream waterfall: its errors are the chain's own business.
   const decision = await next()
-  if (!config.injectPromptHits || config.injectMode === 'map-only') return decision
   if (decision.kind !== 'enter') return decision
+  // P2b (spec #6): a compaction dropped the session-start orientation —
+  // re-inject the short map ONCE per compaction, independent of prompt hits.
+  let result = config.reinjectAfterCompaction
+    ? await reInjectCompactedMap(payload, config, deps, runGraph, decision)
+    : decision
+  if (!config.injectPromptHits || config.injectMode === 'map-only') return result
   try {
+    // The prompt is the USER's prompt (downstream decision), never the
+    // plugin-injected map text — otherwise the reinject would inflate it.
     const prompt = promptText(decision.messages)
-    if (prompt.length < config.promptMinChars) return decision
+    if (prompt.length < config.promptMinChars) return result
     const agent = payload.agent
     const anchor = sessionAnchor(agent, deps)
-    if (anchor === undefined || anchor.outsideGit) return decision
+    if (anchor === undefined || anchor.outsideGit) return result
     const root = anchor.gitRoot
-    if (root === undefined || anchor.graphDir === undefined) return decision
+    if (root === undefined || anchor.graphDir === undefined) return result
     const sessionKey = agentId(agent)
     const dir = anchor.graphRepoRoot ?? root
 
@@ -311,7 +325,7 @@ export async function handlePreStep(
     const memoized = deps.state.lookupPromptHit(sessionKey, root, promptHash)
     if (memoized !== undefined && deps.state.isHitInjected(sessionKey, root, memoized)) {
       // Same prompt, same top hit, already in context: skip the CLI entirely.
-      return decision
+      return result
     }
 
     // Scope hint (P2a, spec #8): when enabled and a file was edited, narrow
@@ -332,27 +346,27 @@ export async function handlePreStep(
     })
     if (code !== 0) {
       deps.logger.warn(`dsh-context-graph: pre-step ask exited ${code}; skipping`)
-      return decision
+      return result
     }
     const hits = Array.isArray(json.hits) ? json.hits : []
     const top = hits[0]
-    if (top === undefined || typeof top !== 'object' || top === null) return decision
+    if (top === undefined || typeof top !== 'object' || top === null) return result
     const hitKey = `${typeof top.pointer === 'string' ? top.pointer : ''}\0${typeof top.title === 'string' ? top.title : ''}`
     deps.state.recordPromptHit(sessionKey, root, promptHash, hitKey)
-    if (!deps.state.markHitInjected(sessionKey, root, hitKey)) return decision
+    if (!deps.state.markHitInjected(sessionKey, root, hitKey)) return result
     const rendered = config.injectMode === 'sourced'
       ? renderPromptHitsSourced(json, config.maxInjectBytes)
       : renderPromptHits(json, config.maxInjectBytes)
-    if (rendered === '') return decision
+    if (rendered === '') return result
     const message = createUserMessage({
       content: [{ type: 'text', text: rendered }],
       source: { kind: 'plugin', plugin: deps.pluginName },
     })
-    return { ...decision, messages: [...decision.messages, message] }
+    return { ...result, messages: [...result.messages, message] }
   } catch (error) {
-    if (error instanceof GraphError && error.code === 'GRAPH_CLI_MISSING') return decision
+    if (error instanceof GraphError && error.code === 'GRAPH_CLI_MISSING') return result
     deps.logger.error(`dsh-context-graph: pre-step hook failed (${errorMessage(error)})`)
-    return decision
+    return result
   }
 }
 
@@ -616,6 +630,180 @@ export async function handleTurnStopping(
 }
 
 /** Register all lifecycle hooks. Pure registrations; no work happens here. */
+const COMPACTION_REINJECT_INTRO = 'Session history was compacted — repo orientation restored (short map; use the graph tools for source):'
+const SUBAGENT_MAP_INTRO = 'Repo context graph (short map for this subagent; use the graph tools for source):'
+
+/**
+ * P2b (spec #6): consume the one-shot compaction marker, if armed. Runs
+ * `graft map --json` once per compaction and appends the short map (budget
+ * `maxInjectBytes / 2`) to the step's admitted messages. Fail-open: a
+ * missing graph, CLI error, or bad JSON returns the decision untouched and
+ * still consumes the marker (no retry loop on a broken repo).
+ */
+type EnterDecision = Extract<PreStepDecision, { kind: 'enter' }>
+
+async function reInjectCompactedMap(
+  payload: { agent: Agent; signal: AbortSignal },
+  config: HooksConfig,
+  deps: HooksDeps,
+  runGraph: typeof runGraphJson,
+  decision: EnterDecision,
+): Promise<EnterDecision> {
+  try {
+    const agent = payload.agent
+    const anchor = sessionAnchor(agent, deps)
+    if (anchor === undefined || anchor.outsideGit) return decision
+    const root = anchor.gitRoot
+    if (root === undefined || anchor.graphDir === undefined) return decision
+    const sessionKey = agentId(agent)
+    const pendingId = deps.state.takePendingCompaction(sessionKey, root)
+    if (pendingId === undefined) return decision
+    const dir = anchor.graphRepoRoot ?? root
+    const { json, code } = await runGraph<MapPayload>(['map', '--json', dir], {
+      cwd: dir, timeoutMs: config.timeoutMs, graphPath: config.graphPath, signal: payload.signal,
+    })
+    if (code !== 0) {
+      deps.logger.warn(`dsh-context-graph: compaction re-inject map exited ${code}; skipping`)
+      return decision
+    }
+    const rendered = renderMap(json, config.maxInjectBytes / 2)
+    if (rendered === '') return decision
+    const message = createUserMessage({
+      content: [{ type: 'text', text: `${COMPACTION_REINJECT_INTRO}\n${rendered}` }],
+      source: { kind: 'plugin', plugin: deps.pluginName },
+    })
+    deps.logger.info(`dsh-context-graph: compaction map re-injected (id ${pendingId})`)
+    return { ...decision, messages: [...decision.messages, message] }
+  } catch (error) {
+    deps.logger.error(`dsh-context-graph: compaction re-inject failed (${errorMessage(error)})`)
+    return decision
+  }
+}
+
+/**
+ * P2b (spec #5): on `agent/created`, give a SUBAGENT the short repo map when
+ * it lands in a repo that already has a graph — otherwise the explore
+ * subagent repeats the parent's cold-grep cycle. The root agent is skipped
+ * (its map arrives at session-start with the full budget). Budget is
+ * `maxInjectBytes / 2`. Fail-open end to end.
+ */
+export async function handleAgentCreated(
+  agent: Agent,
+  config: HooksConfig,
+  deps: HooksDeps,
+  runGraph: typeof runGraphJson,
+): Promise<void> {
+  if (!config.injectSubagentMap) return
+  // A live handle may throw on property access once disposed; defensive.
+  let parent: unknown
+  try {
+    parent = agent.parentAgent
+  } catch {
+    return
+  }
+  if (parent === undefined) return
+  const anchor = sessionAnchor(agent, deps)
+  if (anchor === undefined || anchor.outsideGit) return
+  const root = anchor.gitRoot
+  if (root === undefined || anchor.graphDir === undefined) return
+  const dir = anchor.graphRepoRoot ?? root
+  const { json, code } = await runGraph<MapPayload>(['map', '--json', dir], {
+    cwd: dir, timeoutMs: config.timeoutMs, graphPath: config.graphPath,
+  })
+  if (code !== 0) {
+    deps.logger.warn(`dsh-context-graph: subagent map exited ${code}; skipping`)
+    return
+  }
+  const rendered = renderMap(json, config.maxInjectBytes / 2)
+  if (rendered === '') return
+  injectSafe(agent, `${SUBAGENT_MAP_INTRO}\n${rendered}`, deps)
+}
+
+/**
+ * P2b (spec #6): observe committed session events (host surface verified
+ * against the goal/todo precedent). Only compactions matter here:
+ * `compaction/summary` / `compaction/prune` arm the one-shot map re-inject,
+ * consumed at the session's NEXT pre-step. Deliberately light — no CLI, no
+ * I/O beyond the state store — because the listener runs on every session
+ * event.
+ */
+export function handleSessionEvent(
+  session: Session,
+  event: SessionEventLike,
+  config: HooksConfig,
+  deps: HooksDeps,
+): void {
+  if (!config.reinjectAfterCompaction) return
+  try {
+    if (event === null || typeof event !== 'object') return
+    if (event.type !== 'compaction/summary' && event.type !== 'compaction/prune') return
+    const data = event.data
+    const compactionId = data !== undefined && typeof data.compactionId === 'string' ? data.compactionId : undefined
+    if (compactionId === undefined) return
+    const header = session?.header
+    if (header === undefined) return
+    const sessionId = typeof header.id === 'string' ? header.id : undefined
+    const cwd = typeof header.cwd === 'string' ? header.cwd : undefined
+    if (sessionId === undefined) return
+    const anchor = resolveRepoAnchor(cwd, deps.processCwd?.() ?? process.cwd())
+    if (anchor === undefined || anchor.outsideGit) return
+    if (anchor.gitRoot === undefined || anchor.graphDir === undefined) return
+    deps.state.markCompaction(sessionId, anchor.gitRoot, compactionId)
+    deps.logger.info(`dsh-context-graph: compaction ${compactionId} observed; map re-injects at the next pre-step`)
+  } catch (error) {
+    deps.logger.warn(`dsh-context-graph: session/event hook failed (${errorMessage(error)})`)
+  }
+}
+
+/**
+ * P2b (spec #11): stable partition — the plugin's graph tools first (their
+ * original relative order), the rest untouched. Returns the input as-is
+ * (same array) when nothing needs reordering.
+ */
+export function reorderToolsForGraph<T extends { readonly name?: unknown }>(
+  tools: readonly T[] | undefined,
+  graphToolNames: readonly string[],
+): readonly T[] {
+  if (tools === undefined) return []
+  const graph = new Set(graphToolNames)
+  const head: T[] = []
+  const tail: T[] = []
+  for (const tool of tools) {
+    if (tool !== null && typeof tool === 'object' && typeof tool.name === 'string' && graph.has(tool.name)) {
+      head.push(tool)
+    } else {
+      tail.push(tool)
+    }
+  }
+  if (head.length === 0) return tools
+  return [...head, ...tail]
+}
+
+/**
+ * P2b (spec #11): the `system-prompt/assemble` waterfall — after downstream
+ * assembly, move the graph tools ahead of grep/read in the recommended
+ * order. Never breaks the deploy: a missing `tools` array or any error
+ * returns the assembled prompt unchanged.
+ */
+async function handleAssemble(
+  _assembly: PromptAssembly,
+  _context: AssembleContext,
+  next: () => Promise<PromptAssembly>,
+  config: HooksConfig,
+  logger: HooksDeps['logger'],
+): Promise<PromptAssembly> {
+  const result = await next()
+  if (!config.toolOrder) return result
+  try {
+    if (result !== null && typeof result === 'object' && Array.isArray(result.tools)) {
+      result.tools = reorderToolsForGraph(result.tools, Object.values(TOOL_NAMES)) as typeof result.tools
+    }
+  } catch (error) {
+    logger.warn(`dsh-context-graph: toolOrder skipped (${errorMessage(error)})`)
+  }
+  return result
+}
+
 export function registerHooks(
   ctx: Context,
   config: HooksConfig,
@@ -648,5 +836,25 @@ export function registerHooks(
     void handleTurnStopping(payload.agent, config, deps).catch((error: unknown) => {
       deps.logger.error(`dsh-context-graph: turn-stopping hook failed (${errorMessage(error)})`)
     })
+  })
+  // P2b (spec #5): subagents get the short map at creation (emit-mode).
+  if (config.injectSubagentMap) {
+    ctx.on('agent/created', (payload) => {
+      void handleAgentCreated(payload.agent, config, deps, runGraph).catch((error: unknown) => {
+        deps.logger.error(`dsh-context-graph: agent-created hook failed (${errorMessage(error)})`)
+      })
+    })
+  }
+  // P2b (spec #6): observe compactions; the map re-injects at next pre-step.
+  // Synchronous by design (no CLI here), so a listener failure cannot wedge
+  // the session-event stream.
+  if (config.reinjectAfterCompaction) {
+    ctx.on('session/event', (session, event) => {
+      handleSessionEvent(session, event, config, deps)
+    })
+  }
+  // P2b (spec #11): graph tools first in the assembled prompt (waterfall).
+  ctx.on('system-prompt/assemble', (assembly, context, next) => {
+    return handleAssemble(assembly, context, next, config, deps.logger)
   })
 }

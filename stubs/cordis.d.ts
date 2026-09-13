@@ -8,7 +8,7 @@
  * (packages/core/agent runtime-types + packages/core/tools index).
  */
 declare module '@deepseek-ai/cordis' {
-  import type { Agent, PreStepDecision, SessionStartSource } from '@deepseek-ai/dsh-agent'
+  import type { Agent, PreStepDecision, Session, SessionStartSource } from '@deepseek-ai/dsh-agent'
   import type { UserMessage } from '@deepseek-ai/dsh-llm'
   import type {
     PostToolDecision,
@@ -41,6 +41,49 @@ declare module '@deepseek-ai/cordis' {
   export interface ToolsService {
     /** Register a tool; disposing the plugin fiber unregisters it. */
     register(tool: ToolDefinition): void
+  }
+
+  /**
+   * One tool entry of an assembled prompt (host: dsh-llm `ToolSchema`).
+   * ANTI-DRIFT: verified 2026-09-13 against
+   * packages/llm/llm/src/types.ts (`name`, `description`, `parameters`).
+   */
+  export interface ToolSchemaLike {
+    readonly name: string
+    readonly description?: string
+    readonly parameters?: Record<string, unknown>
+  }
+
+  /**
+   * The assembled prompt handed to the `system-prompt/assemble` waterfall.
+   * ANTI-DRIFT: verified 2026-09-13 against
+   * packages/core/system-prompt/lib/types/index.d.ts
+   * (`sections`, `contexts`, `tools: ToolSchema[]`, `variables`).
+   */
+  export interface PromptAssembly {
+    sections: ReadonlyArray<unknown>
+    contexts: ReadonlyArray<unknown>
+    tools: ReadonlyArray<ToolSchemaLike>
+    variables: Record<string, string | undefined>
+  }
+
+  /** Per-assembly context (scope + optional signal). */
+  export interface AssembleContext {
+    readonly scope?: unknown
+    readonly signal?: AbortSignal
+  }
+
+  /**
+   * A committed session event as observed by plugins (host: dsh-session
+   * `SessionEvent`). ANTI-DRIFT: verified 2026-09-13 against the compaction
+   * vocabulary (packages/compaction/compaction/lib/types/types.d.ts:
+   * `compaction/summary`, `compaction/prune`) and the host subscription
+   * precedent (packages/goal, packages/todo: `ctx.on('session/event',
+   * (session, event) => …)`).
+   */
+  export interface SessionEventLike {
+    readonly type: string
+    readonly data: Record<string, unknown>
   }
 
   export interface SettingsSectionHooks<T> {
@@ -82,6 +125,14 @@ declare module '@deepseek-ai/cordis' {
       event: 'tools/result',
       listener: (exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>) => void,
     ): () => void
+    on(
+      event: 'agent/created',
+      listener: (payload: { agent: Agent }) => void,
+    ): () => void
+    on(
+      event: 'session/event',
+      listener: (session: Session, event: SessionEventLike) => void,
+    ): () => void
 
     // ---- waterfall events --------------------------------------------------
     on(
@@ -107,6 +158,14 @@ declare module '@deepseek-ai/cordis' {
         next: () => Promise<PreToolDecision>,
       ) => Promise<PreToolDecision>,
       options?: { prepend?: boolean },
+    ): () => void
+    on(
+      event: 'system-prompt/assemble',
+      listener: (
+        assembly: PromptAssembly,
+        context: AssembleContext,
+        next: () => Promise<PromptAssembly>,
+      ) => Promise<PromptAssembly>,
     ): () => void
 
     // ---- catch-all (unknown host events) ------------------------------------

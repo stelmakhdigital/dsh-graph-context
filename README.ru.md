@@ -82,6 +82,9 @@ P2a уточняет push для локальных моделей, каждое
 | `scopeFromLastEdit` | `false` | (P2a) сузить следующий pre-step `ask` до top-level каталога последнего отредактированного файла (польза для монорепо; по умолчанию выкл, чтобы в одно-пакетных репо retrieval оставался по всему репо). |
 | `metrics` | `true` | (P2a) локальные счётчики graph- vs source-чтений по сессии в `$DSH_HOME/context-graph-stats.json`. Только локально — никогда не POST. |
 | `guardWiringReads` | `false` | (P2a) отказывать в прямом чтении `graft/.graph/*` с подсказкой на tools. Текстовая инструкция уже в system-секции и скилле; жёсткий guard — opt-in. |
+| `injectSubagentMap` | `true` | (P2b) короткий repo-мап субагентам при `agent/created` (бюджет `maxInjectBytes / 2`), чтобы explore-субагент в репо с графом не повторял cold-grep родителя. |
+| `reinjectAfterCompaction` | `true` | (P2b) после компакции истории хостом одноразово reinject короткого мапа на следующем pre-step — ориентация session-start переживает компакцию. |
+| `toolOrder` | `true` | (P2b) graph-tools — первыми в собранном промпте (`system-prompt/assemble`); no-op, если хост не отдаёт событие. |
 
 Оверлей пользователя (патч заменяет **весь** конфиг строки — переписывайте все ключи, которые хотите сохранить), например из `cordis.yml.example`:
 

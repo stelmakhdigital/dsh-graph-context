@@ -5,7 +5,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, SessionStartSource } from '@deepseek-ai/dsh-agent'
 import type { GraphSpawnOptions, GraphSpawnResult } from '../src/cli.ts'
 import { GraphError, type runGraphJson, type spawnDetachedBuild } from '../src/cli.ts'
-import { registerHooks, type HooksConfig } from '../src/hooks.ts'
+import { registerHooks, reorderToolsForGraph, type HooksConfig } from '../src/hooks.ts'
 import { LOCK_FILE_NAME, SessionStateStore } from '../src/session-state.ts'
 import { makeGitRepo, makeTmpRoot, removeTmpRoot } from './fixtures.ts'
 
@@ -34,6 +34,9 @@ const CONFIG: HooksConfig = {
   scopeFromLastEdit: false,
   metrics: true,
   guardWiringReads: false,
+  injectSubagentMap: true,
+  reinjectAfterCompaction: true,
+  toolOrder: true,
 }
 
 interface Injected {
@@ -1310,5 +1313,342 @@ describe('hooks.ts — post-execute local metrics (P2a, spec #16)', () => {
     const { listeners, agent } = setup({ metrics: false }, recordMetric)
     await firePostExecute(listeners, { name: 'graph_find_code', arguments: { query: 'x' }, agent })
     expect(recordMetric).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// P2b: subagent map, compaction re-inject, toolOrder
+// ---------------------------------------------------------------------------
+
+describe('hooks.ts — subagent map (P2b, spec #5)', () => {
+  let root: string
+  let repo: string
+
+  afterAll(() => removeTmpRoot(root))
+
+  function makeSubagent(cwd: string | undefined, opts: { failInject?: boolean; noParent?: boolean } = {}) {
+    const agent = makeAgent(cwd, opts.failInject === true)
+    if (opts.noParent !== true) (agent as unknown as Record<string, unknown>).parentAgent = makeAgent(cwd)
+    return agent
+  }
+
+  function setup(config: Partial<HooksConfig> = {}, noGraph = false) {
+    const { ctx, listeners } = makeCtx()
+    const routed = makeRoutedRunner([
+      { match: (a) => a[0] === 'map', json: MAP_JSON },
+      { match: (a) => a[0] === 'ask', json: ASK_JSON },
+    ])
+    registerHooks(ctx, { ...CONFIG, ...config }, {
+      state: new SessionStateStore(),
+      spawnBuild: makeBuildFake().spawnBuild,
+      pluginName: 'dsh-context-graph',
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      processCwd: () => repo,
+    }, routed.runner)
+    return { listeners, routed, noGraph }
+  }
+
+  async function fireAgentCreated(
+    listeners: Map<string, (...args: unknown[]) => unknown>,
+    agent: Agent,
+  ): Promise<void> {
+    const listener = listeners.get('agent/created')
+    expect(listener).toBeDefined()
+    listener?.({ agent })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+
+  it('a subagent in a graphed repo gets the short map injected', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-submap-')
+    repo = makeGraphRepo(root)
+    const { listeners } = setup()
+    const agent = makeSubagent(join(repo, 'src'))
+    await fireAgentCreated(listeners, agent)
+    expect(agent.inject).toHaveBeenCalledTimes(1)
+    expect(injectedText(agent)).toContain('short map for this subagent')
+    expect(injectedText(agent)).toContain('repo map — 3 files')
+  })
+
+  it('the root agent (no parent) is skipped — its map arrives at session-start', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-submap-root-')
+    repo = makeGraphRepo(root)
+    const { listeners, routed } = setup()
+    const agent = makeSubagent(join(repo, 'src'), { noParent: true })
+    await fireAgentCreated(listeners, agent)
+    expect(agent.inject).not.toHaveBeenCalled()
+    expect(routed.calls).toHaveLength(0)
+  })
+
+  it('injectSubagentMap=false: no agent/created listener at all', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-submap-off-')
+    repo = makeGraphRepo(root)
+    const { listeners } = setup({ injectSubagentMap: false })
+    expect(listeners.get('agent/created')).toBeUndefined()
+  })
+
+  it('a subagent in a repo without a graph: no CLI, no inject', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-submap-nograph-')
+    repo = makeGitRepo(join(root, 'repo')) // no graft/ dir
+    const { listeners, routed } = setup()
+    const agent = makeSubagent(join(repo, 'src'))
+    await fireAgentCreated(listeners, agent)
+    expect(agent.inject).not.toHaveBeenCalled()
+    expect(routed.calls).toHaveLength(0)
+  })
+
+  it('CLI failure: fail-open (no inject, no throw)', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-submap-fail-')
+    repo = makeGraphRepo(root)
+    const { ctx, listeners } = makeCtx()
+    const routed = makeRoutedRunner([{ match: (a) => a[0] === 'map', code: 1 }])
+    registerHooks(ctx, CONFIG, {
+      state: new SessionStateStore(),
+      spawnBuild: makeBuildFake().spawnBuild,
+      pluginName: 'dsh-context-graph',
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      processCwd: () => repo,
+    }, routed.runner)
+    const agent = makeSubagent(join(repo, 'src'))
+    await expect(fireAgentCreated(listeners, agent)).resolves.toBeUndefined()
+    expect(agent.inject).not.toHaveBeenCalled()
+  })
+
+  it('an inject-throwing (disposed) subagent: silent', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-submap-disposed-')
+    repo = makeGraphRepo(root)
+    const { listeners } = setup()
+    const agent = makeSubagent(join(repo, 'src'), { failInject: true })
+    await expect(fireAgentCreated(listeners, agent)).resolves.toBeUndefined()
+  })
+})
+
+describe('hooks.ts — compaction re-inject (P2b, spec #6)', () => {
+  let root: string
+  let repo: string
+
+  afterAll(() => removeTmpRoot(root))
+
+  function setup(config: Partial<HooksConfig> = {}) {
+    const { ctx, listeners } = makeCtx()
+    const routed = makeRoutedRunner([
+      { match: (a) => a[0] === 'map', json: MAP_JSON },
+      { match: (a) => a[0] === 'ask', json: ASK_JSON },
+    ])
+    registerHooks(ctx, { ...CONFIG, ...config }, {
+      state: new SessionStateStore(),
+      spawnBuild: makeBuildFake().spawnBuild,
+      pluginName: 'dsh-context-graph',
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      processCwd: () => repo,
+    }, routed.runner)
+    return { listeners, routed }
+  }
+
+  function fireCompaction(
+    listeners: Map<string, (...args: unknown[]) => unknown>,
+    compactionId: string,
+    type: string = 'compaction/summary',
+    cwd?: string,
+  ): void {
+    const listener = listeners.get('session/event')
+    expect(listener).toBeDefined()
+    listener?.(
+      { header: { id: 'session-x', createdAt: 0, cwd: cwd ?? repo } },
+      { type, data: { compactionId } },
+    )
+  }
+
+  it('a compaction arms a one-shot short-map re-inject at the next pre-step', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-compact-')
+    repo = makeGraphRepo(root)
+    const { listeners, routed } = setup()
+    fireCompaction(listeners, 'c1')
+    // 'hi' is below promptMinChars: only the compaction channel may fire.
+    const decision = await firePreStep(listeners, makeAgent(join(repo, 'src')), ['hi'])
+    expect(decision.kind).toBe('enter')
+    expect(decision.messages).toHaveLength(2)
+    const reinjected = decision.messages?.[1]
+    expect(reinjected).toBeDefined()
+    const text = (reinjected as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? ''
+    expect(text).toContain('compacted — repo orientation restored')
+    expect(text).toContain('repo map — 3 files')
+    const mapCalls = routed.calls.filter((c) => c.args[0] === 'map')
+    expect(mapCalls).toHaveLength(1)
+  })
+
+  it('the re-inject happens exactly once per compaction', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-compact-once-')
+    repo = makeGraphRepo(root)
+    const { listeners, routed } = setup()
+    fireCompaction(listeners, 'c1')
+    await firePreStep(listeners, makeAgent(join(repo, 'src')), ['hi'])
+    const second = await firePreStep(listeners, makeAgent(join(repo, 'src')), ['hi'])
+    expect(second.messages).toHaveLength(1) // consumed — no second map
+    expect(routed.calls.filter((c) => c.args[0] === 'map')).toHaveLength(1)
+  })
+
+  it('re-observing the same compaction id does not re-arm', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-compact-sameid-')
+    repo = makeGraphRepo(root)
+    const { listeners } = setup()
+    fireCompaction(listeners, 'c1')
+    await firePreStep(listeners, makeAgent(join(repo, 'src')), ['hi'])
+    fireCompaction(listeners, 'c1') // event replay across listeners
+    const decision = await firePreStep(listeners, makeAgent(join(repo, 'src')), ['hi'])
+    expect(decision.messages).toHaveLength(1)
+  })
+
+  it('a NEW compaction id re-arms the re-inject', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-compact-newid-')
+    repo = makeGraphRepo(root)
+    const { listeners } = setup()
+    fireCompaction(listeners, 'c1')
+    await firePreStep(listeners, makeAgent(join(repo, 'src')), ['hi'])
+    fireCompaction(listeners, 'c2')
+    const decision = await firePreStep(listeners, makeAgent(join(repo, 'src')), ['hi'])
+    expect(decision.messages).toHaveLength(2)
+  })
+
+  it('works with injectPromptHits off (independent channel)', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-compact-independent-')
+    repo = makeGraphRepo(root)
+    const { listeners, routed } = setup({ injectPromptHits: false })
+    fireCompaction(listeners, 'c1')
+    const decision = await firePreStep(listeners, makeAgent(join(repo, 'src')), ['a longer user prompt that passes the minimum'])
+    expect(decision.messages).toHaveLength(2)
+    expect(routed.calls.filter((c) => c.args[0] === 'ask')).toHaveLength(0)
+  })
+
+  it('reinjectAfterCompaction=false: no session/event listener, no re-inject', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-compact-off-')
+    repo = makeGraphRepo(root)
+    const { listeners, routed } = setup({ reinjectAfterCompaction: false })
+    expect(listeners.get('session/event')).toBeUndefined()
+    const decision = await firePreStep(listeners, makeAgent(join(repo, 'src')), ['hi'])
+    expect(decision.messages).toHaveLength(1)
+    expect(routed.calls).toHaveLength(0)
+  })
+
+  it('a compaction in a non-graphed repo arms nothing', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-compact-nograph-')
+    repo = makeGitRepo(join(root, 'repo')) // no graft/ dir
+    const { listeners, routed } = setup()
+    fireCompaction(listeners, 'c1')
+    const decision = await firePreStep(listeners, makeAgent(join(repo, 'src')), ['hi'])
+    expect(decision.messages).toHaveLength(1)
+    expect(routed.calls).toHaveLength(0)
+  })
+
+  it('non-compaction session events are ignored', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-compact-others-')
+    repo = makeGraphRepo(root)
+    const { listeners, routed } = setup()
+    const listener = listeners.get('session/event')
+    listener?.(
+      { header: { id: 'session-x', createdAt: 0, cwd: repo } },
+      { type: 'user/message', data: {} },
+    )
+    const decision = await firePreStep(listeners, makeAgent(join(repo, 'src')), ['hi'])
+    expect(decision.messages).toHaveLength(1)
+    expect(routed.calls).toHaveLength(0)
+  })
+
+  it('a compaction event without compactionId is ignored (fail-open)', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-compact-noid-')
+    repo = makeGraphRepo(root)
+    const { listeners, routed } = setup()
+    const listener = listeners.get('session/event')
+    listener?.(
+      { header: { id: 'session-x', createdAt: 0, cwd: repo } },
+      { type: 'compaction/summary', data: {} },
+    )
+    const decision = await firePreStep(listeners, makeAgent(join(repo, 'src')), ['hi'])
+    expect(decision.messages).toHaveLength(1)
+    expect(routed.calls).toHaveLength(0)
+  })
+
+  it('prune compactions are handled like summary compactions', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-compact-prune-')
+    repo = makeGraphRepo(root)
+    const { listeners } = setup()
+    fireCompaction(listeners, 'p1', 'compaction/prune')
+    const decision = await firePreStep(listeners, makeAgent(join(repo, 'src')), ['hi'])
+    expect(decision.messages).toHaveLength(2)
+  })
+})
+
+describe('hooks.ts — toolOrder (P2b, spec #11)', () => {
+
+  const GREP = { name: 'grep', description: '' }
+  const READ = { name: 'read', description: '' }
+  const BASH = { name: 'bash', description: '' }
+  const G1 = { name: 'graph_find_code', description: '' }
+  const G2 = { name: 'graph_repo_map', description: '' }
+  const NAMES = ['graph_find_code', 'graph_file_api', 'graph_trace_calls', 'graph_find_all', 'graph_repo_map', 'graph_check_freshness']
+
+  it('moves the graph tools first, stably, rest untouched', () => {
+    const out = reorderToolsForGraph([GREP, G1, READ, BASH, G2], NAMES)
+    expect(out.map((t) => t.name)).toEqual(['graph_find_code', 'graph_repo_map', 'grep', 'read', 'bash'])
+  })
+
+  it('returns the same array when there is nothing to reorder', () => {
+    const input = [GREP, READ, BASH]
+    expect(reorderToolsForGraph(input, NAMES)).toBe(input)
+  })
+
+  it('undefined tools yield an empty array (never throws)', () => {
+    expect(reorderToolsForGraph(undefined, NAMES)).toEqual([])
+  })
+
+  it('keeps graph-tool relative order (stable partition)', () => {
+    const out = reorderToolsForGraph([G2, GREP, G1], NAMES)
+    expect(out.map((t) => t.name)).toEqual(['graph_repo_map', 'graph_find_code', 'grep'])
+  })
+
+  it('the assemble waterfall reorders; toolOrder=false leaves the order', async () => {
+    const { ctx, listeners } = makeCtx()
+    registerHooks(ctx, CONFIG, {
+      state: new SessionStateStore(),
+      spawnBuild: makeBuildFake().spawnBuild,
+      pluginName: 'dsh-context-graph',
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      processCwd: () => '/tmp',
+    }, makeRoutedRunner([]).runner)
+    const listener = listeners.get('system-prompt/assemble')
+    expect(listener).toBeDefined()
+    const assembly = { sections: [], contexts: [], tools: [GREP, G1, READ], variables: {} }
+    const next = async () => assembly
+    const result = (await listener?.(assembly, {}, next)) as typeof assembly
+    expect(result.tools.map((t: { name: string }) => t.name)).toEqual(['graph_find_code', 'grep', 'read'])
+  })
+
+  it('toolOrder=false: the assembled tools come back untouched', async () => {
+    const { ctx, listeners } = makeCtx()
+    registerHooks(ctx, { ...CONFIG, toolOrder: false }, {
+      state: new SessionStateStore(),
+      spawnBuild: makeBuildFake().spawnBuild,
+      pluginName: 'dsh-context-graph',
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      processCwd: () => '/tmp',
+    }, makeRoutedRunner([]).runner)
+    const listener = listeners.get('system-prompt/assemble')
+    const assembly = { sections: [], contexts: [], tools: [GREP, G1], variables: {} }
+    const result = (await listener?.(assembly, {}, async () => assembly)) as typeof assembly
+    expect(result.tools.map((t: { name: string }) => t.name)).toEqual(['grep', 'graph_find_code'])
+  })
+
+  it('a downstream assembly without a tools array passes through unchanged', async () => {
+    const { ctx, listeners } = makeCtx()
+    registerHooks(ctx, CONFIG, {
+      state: new SessionStateStore(),
+      spawnBuild: makeBuildFake().spawnBuild,
+      pluginName: 'dsh-context-graph',
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      processCwd: () => '/tmp',
+    }, makeRoutedRunner([]).runner)
+    const listener = listeners.get('system-prompt/assemble')
+    const bare = { sections: [], contexts: [], variables: {} }
+    const result = await listener?.(bare as never, {}, async () => bare)
+    expect(result).toBe(bare)
   })
 })

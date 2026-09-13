@@ -26,3 +26,9 @@
         scopeFromLastEdit: false
         metrics: true
         guardWiringReads: false
+        # short repo map into subagents on agent/created (P2b)
+        injectSubagentMap: true
+        # re-inject the short map once after the host compacts the session (P2b)
+        reinjectAfterCompaction: true
+        # list the graph tools first in the assembled prompt (P2b)
+        toolOrder: true
