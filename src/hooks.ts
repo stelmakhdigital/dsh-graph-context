@@ -302,11 +302,16 @@ export async function handlePreStep(
   // Downstream waterfall: its errors are the chain's own business.
   const decision = await next()
   if (decision.kind !== 'enter') return decision
-  // P2b (spec #6): a compaction dropped the session-start orientation —
-  // re-inject the short map ONCE per compaction, independent of prompt hits.
-  let result = config.reinjectAfterCompaction
-    ? await reInjectCompactedMap(payload, config, deps, runGraph, decision)
-    : decision
+  // P2b (spec #5/#6): one-shot map channels, consumed before prompt hits.
+  // Subagent short map (armed at agent/created) and the post-compaction
+  // re-inject — both independent of prompt hits.
+  let result = decision
+  if (config.injectSubagentMap) {
+    result = await injectSubagentMap(payload, config, deps, runGraph, result)
+  }
+  if (config.reinjectAfterCompaction) {
+    result = await reInjectCompactedMap(payload, config, deps, runGraph, result)
+  }
   if (!config.injectPromptHits || config.injectMode === 'map-only') return result
   try {
     // The prompt is the USER's prompt (downstream decision), never the
@@ -681,42 +686,81 @@ async function reInjectCompactedMap(
 }
 
 /**
- * P2b (spec #5): on `agent/created`, give a SUBAGENT the short repo map when
- * it lands in a repo that already has a graph — otherwise the explore
+ * P2b (spec #5): on `agent/created`, ARM the subagent short map when the
+ * subagent lands in a repo that already has a graph — otherwise the explore
  * subagent repeats the parent's cold-grep cycle. The root agent is skipped
- * (its map arrives at session-start with the full budget). Budget is
- * `maxInjectBytes / 2`. Fail-open end to end.
+ * (its map arrives at session-start with the full budget).
+ *
+ * Delivery is NOT an `agent.inject` here: the subagent driver submits the
+ * prompt immediately after creation, so an injected context races the first
+ * pre-step's claim and is lost (verified live 2026-09-13: the inject lost
+ * the race, the short map never arrived). Instead the arming is consumed at
+ * the subagent's FIRST pre-step, where the map is appended to the step's
+ * admitted messages and claimed synchronously. Synchronous by design — the
+ * listener runs on every agent registration.
  */
-export async function handleAgentCreated(
+export function handleAgentCreated(
   agent: Agent,
   config: HooksConfig,
   deps: HooksDeps,
-  runGraph: typeof runGraphJson,
-): Promise<void> {
+): void {
   if (!config.injectSubagentMap) return
-  // A live handle may throw on property access once disposed; defensive.
-  let parent: unknown
   try {
-    parent = agent.parentAgent
-  } catch {
-    return
+    // A live handle may throw on property access once disposed; defensive.
+    const parent = agent.parentAgent
+    if (parent === undefined) return
+    const anchor = sessionAnchor(agent, deps)
+    if (anchor === undefined || anchor.outsideGit) return
+    const root = anchor.gitRoot
+    if (root === undefined || anchor.graphDir === undefined) return
+    deps.state.markSubagentMap(agentId(agent), root)
+    deps.logger.info('dsh-context-graph: subagent map armed; delivered at the subagent\'s first pre-step')
+  } catch (error) {
+    deps.logger.warn(`dsh-context-graph: agent-created hook failed (${errorMessage(error)})`)
   }
-  if (parent === undefined) return
-  const anchor = sessionAnchor(agent, deps)
-  if (anchor === undefined || anchor.outsideGit) return
-  const root = anchor.gitRoot
-  if (root === undefined || anchor.graphDir === undefined) return
-  const dir = anchor.graphRepoRoot ?? root
-  const { json, code } = await runGraph<MapPayload>(['map', '--json', dir], {
-    cwd: dir, timeoutMs: config.timeoutMs, graphPath: config.graphPath,
-  })
-  if (code !== 0) {
-    deps.logger.warn(`dsh-context-graph: subagent map exited ${code}; skipping`)
-    return
+}
+
+/**
+ * P2b (spec #5): consume the armed subagent short map at the subagent's
+ * FIRST pre-step — `graft map --json` once, budget `maxInjectBytes / 2`,
+ * appended to the step's admitted messages. Fail-open: a CLI error still
+ * consumes the arming (one-shot, no retry loop on a broken repo).
+ */
+async function injectSubagentMap(
+  payload: { agent: Agent; signal: AbortSignal },
+  config: HooksConfig,
+  deps: HooksDeps,
+  runGraph: typeof runGraphJson,
+  decision: EnterDecision,
+): Promise<EnterDecision> {
+  try {
+    const agent = payload.agent
+    const anchor = sessionAnchor(agent, deps)
+    if (anchor === undefined || anchor.outsideGit) return decision
+    const root = anchor.gitRoot
+    if (root === undefined || anchor.graphDir === undefined) return decision
+    const sessionKey = agentId(agent)
+    if (!deps.state.takeSubagentMap(sessionKey, root)) return decision
+    const dir = anchor.graphRepoRoot ?? root
+    const { json, code } = await runGraph<MapPayload>(['map', '--json', dir], {
+      cwd: dir, timeoutMs: config.timeoutMs, graphPath: config.graphPath, signal: payload.signal,
+    })
+    if (code !== 0) {
+      deps.logger.warn(`dsh-context-graph: subagent map exited ${code}; skipping`)
+      return decision
+    }
+    const rendered = renderMap(json, config.maxInjectBytes / 2)
+    if (rendered === '') return decision
+    const message = createUserMessage({
+      content: [{ type: 'text', text: `${SUBAGENT_MAP_INTRO}\n${rendered}` }],
+      source: { kind: 'plugin', plugin: deps.pluginName },
+    })
+    deps.logger.info(`dsh-context-graph: subagent map delivered at pre-step (session ${sessionKey})`)
+    return { ...decision, messages: [...decision.messages, message] }
+  } catch (error) {
+    deps.logger.error(`dsh-context-graph: subagent map delivery failed (${errorMessage(error)})`)
+    return decision
   }
-  const rendered = renderMap(json, config.maxInjectBytes / 2)
-  if (rendered === '') return
-  injectSafe(agent, `${SUBAGENT_MAP_INTRO}\n${rendered}`, deps)
 }
 
 /**
@@ -837,12 +881,11 @@ export function registerHooks(
       deps.logger.error(`dsh-context-graph: turn-stopping hook failed (${errorMessage(error)})`)
     })
   })
-  // P2b (spec #5): subagents get the short map at creation (emit-mode).
+  // P2b (spec #5): arm the subagent short map at creation (emit-mode,
+  // synchronous — the map itself is delivered at the first pre-step).
   if (config.injectSubagentMap) {
     ctx.on('agent/created', (payload) => {
-      void handleAgentCreated(payload.agent, config, deps, runGraph).catch((error: unknown) => {
-        deps.logger.error(`dsh-context-graph: agent-created hook failed (${errorMessage(error)})`)
-      })
+      handleAgentCreated(payload.agent, config, deps)
     })
   }
   // P2b (spec #6): observe compactions; the map re-injects at next pre-step.

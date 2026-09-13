@@ -1326,13 +1326,13 @@ describe('hooks.ts — subagent map (P2b, spec #5)', () => {
 
   afterAll(() => removeTmpRoot(root))
 
-  function makeSubagent(cwd: string | undefined, opts: { failInject?: boolean; noParent?: boolean } = {}) {
-    const agent = makeAgent(cwd, opts.failInject === true)
-    if (opts.noParent !== true) (agent as unknown as Record<string, unknown>).parentAgent = makeAgent(cwd)
+  function makeSubagent(cwd: string | undefined, noParent = false) {
+    const agent = makeAgent(cwd)
+    if (!noParent) (agent as unknown as Record<string, unknown>).parentAgent = makeAgent(cwd)
     return agent
   }
 
-  function setup(config: Partial<HooksConfig> = {}, noGraph = false) {
+  function setup(config: Partial<HooksConfig> = {}) {
     const { ctx, listeners } = makeCtx()
     const routed = makeRoutedRunner([
       { match: (a) => a[0] === 'map', json: MAP_JSON },
@@ -1345,37 +1345,47 @@ describe('hooks.ts — subagent map (P2b, spec #5)', () => {
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       processCwd: () => repo,
     }, routed.runner)
-    return { listeners, routed, noGraph }
+    return { listeners, routed }
   }
 
-  async function fireAgentCreated(
+  function fireAgentCreated(
     listeners: Map<string, (...args: unknown[]) => unknown>,
     agent: Agent,
-  ): Promise<void> {
+  ): void {
     const listener = listeners.get('agent/created')
     expect(listener).toBeDefined()
     listener?.({ agent })
-    await new Promise((resolve) => setTimeout(resolve, 20))
   }
 
-  it('a subagent in a graphed repo gets the short map injected', async () => {
+  it('a subagent in a graphed repo gets the short map at its FIRST pre-step', async () => {
     root = makeTmpRoot('dsh-cg-p2b-submap-')
     repo = makeGraphRepo(root)
-    const { listeners } = setup()
+    const { listeners, routed } = setup()
     const agent = makeSubagent(join(repo, 'src'))
-    await fireAgentCreated(listeners, agent)
-    expect(agent.inject).toHaveBeenCalledTimes(1)
-    expect(injectedText(agent)).toContain('short map for this subagent')
-    expect(injectedText(agent)).toContain('repo map — 3 files')
+    fireAgentCreated(listeners, agent)
+    // The map is delivered through the pre-step decision (claimed
+    // synchronously) — not via agent.inject, which races the subagent's
+    // immediately-submitted prompt.
+    const decision = await firePreStep(listeners, agent, ['hi'])
+    expect(decision.kind).toBe('enter')
+    expect(decision.messages).toHaveLength(2)
+    const reinjected = decision.messages?.[1]
+    expect(reinjected).toBeDefined()
+    const text = (reinjected as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? ''
+    expect(text).toContain('short map for this subagent')
+    expect(text).toContain('repo map — 3 files')
+    expect(agent.inject).not.toHaveBeenCalled()
+    expect(routed.calls.filter((c) => c.args[0] === 'map')).toHaveLength(1)
   })
 
-  it('the root agent (no parent) is skipped — its map arrives at session-start', async () => {
+  it('the root agent (no parent) is never armed — its map arrives at session-start', async () => {
     root = makeTmpRoot('dsh-cg-p2b-submap-root-')
     repo = makeGraphRepo(root)
     const { listeners, routed } = setup()
-    const agent = makeSubagent(join(repo, 'src'), { noParent: true })
-    await fireAgentCreated(listeners, agent)
-    expect(agent.inject).not.toHaveBeenCalled()
+    const agent = makeSubagent(join(repo, 'src'), true)
+    fireAgentCreated(listeners, agent)
+    const decision = await firePreStep(listeners, agent, ['hi'])
+    expect(decision.messages).toHaveLength(1)
     expect(routed.calls).toHaveLength(0)
   })
 
@@ -1386,17 +1396,30 @@ describe('hooks.ts — subagent map (P2b, spec #5)', () => {
     expect(listeners.get('agent/created')).toBeUndefined()
   })
 
-  it('a subagent in a repo without a graph: no CLI, no inject', async () => {
+  it('a subagent in a repo without a graph: never armed, no CLI', async () => {
     root = makeTmpRoot('dsh-cg-p2b-submap-nograph-')
     repo = makeGitRepo(join(root, 'repo')) // no graft/ dir
     const { listeners, routed } = setup()
     const agent = makeSubagent(join(repo, 'src'))
-    await fireAgentCreated(listeners, agent)
-    expect(agent.inject).not.toHaveBeenCalled()
+    fireAgentCreated(listeners, agent)
+    const decision = await firePreStep(listeners, agent, ['hi'])
+    expect(decision.messages).toHaveLength(1)
     expect(routed.calls).toHaveLength(0)
   })
 
-  it('CLI failure: fail-open (no inject, no throw)', async () => {
+  it('the map is delivered exactly once (one-shot)', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-submap-once-')
+    repo = makeGraphRepo(root)
+    const { listeners, routed } = setup()
+    const agent = makeSubagent(join(repo, 'src'))
+    fireAgentCreated(listeners, agent)
+    await firePreStep(listeners, agent, ['hi'])
+    const second = await firePreStep(listeners, agent, ['hi'])
+    expect(second.messages).toHaveLength(1)
+    expect(routed.calls.filter((c) => c.args[0] === 'map')).toHaveLength(1)
+  })
+
+  it('CLI failure at pre-step: fail-open, the arming is consumed (no retry)', async () => {
     root = makeTmpRoot('dsh-cg-p2b-submap-fail-')
     repo = makeGraphRepo(root)
     const { ctx, listeners } = makeCtx()
@@ -1409,16 +1432,23 @@ describe('hooks.ts — subagent map (P2b, spec #5)', () => {
       processCwd: () => repo,
     }, routed.runner)
     const agent = makeSubagent(join(repo, 'src'))
-    await expect(fireAgentCreated(listeners, agent)).resolves.toBeUndefined()
-    expect(agent.inject).not.toHaveBeenCalled()
+    fireAgentCreated(listeners, agent)
+    const decision = await firePreStep(listeners, agent, ['hi'])
+    expect(decision.messages).toHaveLength(1)
+    const second = await firePreStep(listeners, agent, ['hi'])
+    expect(second.messages).toHaveLength(1)
+    expect(routed.calls).toHaveLength(1) // one attempt, then consumed
   })
 
-  it('an inject-throwing (disposed) subagent: silent', async () => {
-    root = makeTmpRoot('dsh-cg-p2b-submap-disposed-')
+  it('works with injectPromptHits off (independent channel)', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-submap-independent-')
     repo = makeGraphRepo(root)
-    const { listeners } = setup()
-    const agent = makeSubagent(join(repo, 'src'), { failInject: true })
-    await expect(fireAgentCreated(listeners, agent)).resolves.toBeUndefined()
+    const { listeners, routed } = setup({ injectPromptHits: false })
+    const agent = makeSubagent(join(repo, 'src'))
+    fireAgentCreated(listeners, agent)
+    const decision = await firePreStep(listeners, agent, ['a longer delegated task that passes the minimum'])
+    expect(decision.messages).toHaveLength(2)
+    expect(routed.calls.filter((c) => c.args[0] === 'ask')).toHaveLength(0)
   })
 })
 

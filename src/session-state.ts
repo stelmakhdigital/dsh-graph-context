@@ -47,6 +47,14 @@ export interface SessionGraphState {
   lastCompactionId?: string
   /** Compaction id whose one-shot map re-inject has not been consumed yet (P2b). */
   compactionPending?: string
+  /**
+   * Subagent short-map arming (P2b, spec #5): set at `agent/created`,
+   * consumed at the session's first pre-step. Delivered through the
+   * pre-step decision (not `agent.inject`) so the very first step claims
+   * it — an inject races the subagent's immediately-submitted prompt
+   * (verified live 2026-09-13: the inject lost the race).
+   */
+  subagentMapPending?: boolean
 }
 
 /** djb2 over the prompt (truncated): a cheap, stable dedupe key. */
@@ -133,6 +141,19 @@ export class SessionStateStore {
     const state = this.states.get(SessionStateStore.key(sessionId, gitRoot))
     const pending = state?.compactionPending
     if (state !== undefined && state.compactionPending !== undefined) state.compactionPending = undefined
+    return pending
+  }
+
+  /** Arm the one-shot subagent short map for this (session, repo) (P2b, spec #5). */
+  markSubagentMap(sessionId: string, gitRoot: string | undefined): void {
+    this.get(sessionId, gitRoot).subagentMapPending = true
+  }
+
+  /** Take the armed subagent short map (P2b): true exactly once, then cleared. */
+  takeSubagentMap(sessionId: string, gitRoot: string | undefined): boolean {
+    const state = this.states.get(SessionStateStore.key(sessionId, gitRoot))
+    const pending = state?.subagentMapPending === true
+    if (state !== undefined && pending) state.subagentMapPending = undefined
     return pending
   }
 

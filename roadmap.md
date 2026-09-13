@@ -1,6 +1,6 @@
 # Roadmap: dsh-context-graph
 
-Обновлено: 2026-09-13 · Статус: **v0.5.0 выпущен** (P2b: host-поверхности #5/#6/#11); **стоп до P2c** (change control)
+Обновлено: 2026-09-13 · Статус: **v0.5.1 выпущен** (P2b + live-фикс доставки subagent-мапа); **стоп до P2c** (change control)
 Цель: P0 работает в `dsh web` — агент читает построенную карту репо, а не грейпит вслепую · KPI: см. PROJECT_MEMORY §2
 
 ## Фазы
@@ -18,7 +18,7 @@
 | 8 Development (P2a) | ✅ 2026-09-13 | M7: P2a-задачи ниже | Пакет #1 injectMode, #2 nudge, #8 scopeFromLastEdit, #12 wiring-guard, #16 metrics, #14 fetch-тест, #13/#15 доки; 175 тестов + e2e 3/3 |
 | 9 Release (P2a) | ✅ 2026-09-13 | M8 | tarball `0.4.0` (0.3.0 не публиковался — в него вошёл ренейм), install web+cg, live-прогон (web-бут + headless exit 0), отчёт §«Отчёт P2a»; **стоп до P2b/P2c** |
 | 10 Release (rename v0.4.0) | ✅ 2026-09-13 | M9 | Токен «graft» убран из всего собственного именования (tools `graph_*`, `graphPath`, `GRAPH_*`, скилл `graph/`, ошибки, env, доки); 175 тестов + e2e 3/3; tarball 0.4.0 в web+cg; репо перечислено с чистого листа (история удалена по команде владельца) |
-| P2b (host-поверхности) | ✅ 2026-09-13 | M10 | Сверка API хоста: `agent/created` (`agent.parentAgent`), `session/event` (`compaction/summary|prune`, прецедент goal/todo), `system-prompt/assemble` (`assembly.tools`); 3 флага конфига (deault on), 24 новых теста (199 всего), e2e 3/3; v0.5.0 в web+cg, live-прогон зелёный |
+| P2b (host-поверхности) | ✅ 2026-09-13 | M10 | Сверка API хоста: `agent/created` (`agent.parentAgent`), `session/event` (`compaction/summary|prune`, прецедент goal/todo), `system-prompt/assemble` (`assembly.tools`); 3 флага конфига (default on), 200 тестов, e2e 3/3; v0.5.1 в web+cg. Live-проверка: toolOrder ✅ (graph-tools первыми), subagent-мап: найден race (inject проигрывает immediately-submitted prompt) → фикс 0.5.1: доставка через pre-step decision |
 | P2c (тяжёлые фичи) | ⬜ | — | #3 graph_blast, #7 graph_enrich (--deep local), #17 watcher, #4 Code Mode — проверка API хоста |
 | P2 учтено частично | ✅ | — | #9 (state по (sessionId,gitRoot) — P0), #10 (no-git → no-op — P0), #12 текстовая часть (system section + skill), #14 (fetch-тест — P2a) |
 
@@ -102,6 +102,7 @@ NFR: без `any` в публичных API; хуки не ходят в сет�
 | 2026-09-13 | **История удалённого репо удалена полностью** — новый первый коммит с чистого листа (orphan), локальный `master` оставлен как бэкап | владелец | команда владельца (2026-09-13) |
 | 2026-09-13 | P2b-старт после v0.4.0: «продолжай» владельца = явная команда продолжить проект (change control) | агент | roadmap: P2b — следующий этап после P2a |
 | 2026-09-13 | P2b-контракты сверены с реальным хостом до TDD: субагенты — `ctx.on('agent/created')` + `agent.parentAgent` (root агент — без parentAgent); компакция — `ctx.on('session/event')` на `compaction/summary`/`compaction/prune` (durable session-события; прецедент подписки — goal/todo/token-meter); toolOrder — waterfall `system-prompt/assemble` с `assembly.tools: ToolSchema[]` | агент | спека #5/#6/#11: «найди актуальное имя», «не ломай деплой, если API нет» |
+| 2026-09-13 | **Live-фикс 0.5.1: subagent-мап доставляется через pre-step decision, а не `agent.inject`** — живая проверка субагентом показала: inject проигрывает race (driver `tool-subagent` → `subagent-in-process-driver` отправляет `child.followup(prompt)` сразу после `agents.create`), мап терялся. Теперь `agent/created` лишь armed-ит одноразовый флажок (синхронно, без CLI), а мап прикладывается к messages первого pre-step'а (синхронный claim — тот же механизм, что у prompt-hits) | агент | live-наблюдение: FULL_MAP (session-start) дошёл на 2-м шаге, SHORT_MAP — никогда; код драйвера: `parent.ctx.agents.create` → `drivePublishedRun` → `child.followup` |
 
 ## Отчёт P0 — критерии приёмки (2026-09-12, профиль `cg` = headless-шаблон)
 
