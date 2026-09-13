@@ -1,0 +1,28 @@
+# User-facing overlay example: point the plugin at a specific engine CLI
+# binary and loosen the query budget. Copy into your profile's
+# cordis.patch.yml (or use `dsh --patch` for a one-off boot).
+#
+# A patch replaces a row's ENTIRE config — restate every key you want to keep.
+- insert:
+    - id: context-graph
+      name: 'dsh-context-graph'
+      inject: ['tools', 'systemPrompt']
+      config:
+        tools: true
+        injectSessionMap: true
+        injectPromptHits: true
+        injectBlastRadius: true
+        autoBuild: true
+        autoSync: true
+        maxInjectBytes: 8192
+        promptMinChars: 12
+        graphPath: '/usr/local/bin/graft'
+        timeoutMs: 8000
+        buildTimeoutMs: 30000
+        deep: false
+        editToolNames: ['write', 'edit']
+        injectMode: sourced
+        nudgeOnBlindSearch: true
+        scopeFromLastEdit: false
+        metrics: true
+        guardWiringReads: false

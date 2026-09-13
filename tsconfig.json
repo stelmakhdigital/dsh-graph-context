@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "baseUrl": ".",
+    "paths": {
+      "@deepseek-ai/cordis": ["stubs/cordis.d.ts"],
+      "@deepseek-ai/dsh-agent": ["stubs/dsh-agent.d.ts"],
+      "@deepseek-ai/dsh-llm": ["stubs/dsh-llm.d.ts"],
+      "@deepseek-ai/dsh-tools": ["stubs/dsh-tools.d.ts"],
+      "@deepseek-ai/schemastery": ["stubs/schemastery.d.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

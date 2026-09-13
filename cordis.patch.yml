@@ -1,0 +1,51 @@
+# dsh-context-graph profile layer.
+#
+# Inserts the plugin row with the full default config (defaults = full stack).
+# A later layer (profile patch, home patch, --patch overlay) can override this
+# row by id, but a patch replaces the row's ENTIRE config: restate every key
+# when overriding, or the omitted keys fall back to the schema defaults.
+#
+# The `inject` list names the services the loader must provide before apply()
+# runs; the plugin module also exports the same list (the entry option wins).
+- insert:
+    - id: context-graph
+      name: 'dsh-context-graph'
+      inject: ['tools', 'systemPrompt']
+      config:
+        # register the six graph_* tools
+        tools: true
+        # session-start: inject the repo map (engine `map` command) into the next request
+        injectSessionMap: true
+        # pre-step: retrieval hits for the user prompt (P1)
+        injectPromptHits: true
+        # post-execute: blast radius after source edits (P1)
+        injectBlastRadius: true
+        # build graft/ at session start when the repo has none
+        autoBuild: true
+        # rebuild on turn-stop when dirty (P1)
+        autoSync: true
+        # hard ceiling in bytes for one injected context per turn
+        maxInjectBytes: 4096
+        # minimum user-prompt length (chars) that triggers retrieval (P1)
+        promptMinChars: 12
+        # explicit engine CLI binary; empty = PATH, then npx fallback
+        graphPath: ''
+        # query timeout, ms
+        timeoutMs: 8000
+        # structural build timeout, ms
+        buildTimeoutMs: 20000
+        # LLM pass; never used by hooks (explicit user commands only)
+        deep: false
+        # host tool names whose success marks the graph dirty (P1)
+        editToolNames: ['write', 'edit']
+        # pre-step retrieval shape (P2a): sourced (DSH default — crux inlined),
+        # pointers (compact), or map-only (no pre-step retrieval)
+        injectMode: sourced
+        # one-time reminder when the model goes to a wide grep before any graph tool (P2a)
+        nudgeOnBlindSearch: true
+        # scope the next ask to the last-edited file's top-level dir (P2a, monorepo)
+        scopeFromLastEdit: false
+        # local per-session graph-vs-source counters in $DSH_HOME (P2a)
+        metrics: true
+        # deny raw reads of graft/.graph/* with a tool hint (P2a, opt-in)
+        guardWiringReads: false
