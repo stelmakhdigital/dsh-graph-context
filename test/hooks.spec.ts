@@ -1326,10 +1326,16 @@ describe('hooks.ts — subagent map (P2b, spec #5)', () => {
 
   afterAll(() => removeTmpRoot(root))
 
-  function makeSubagent(cwd: string | undefined, noParent = false) {
-    const agent = makeAgent(cwd)
-    if (!noParent) (agent as unknown as Record<string, unknown>).parentAgent = makeAgent(cwd)
-    return agent
+  function makeSubagent(cwd: string | undefined, noMarker = false) {
+    const agent = makeAgent(cwd) as unknown as Record<string, unknown>
+    if (!noMarker) {
+      // The durable subagent marker (host runtime: childSessionMeta), NOT the
+      // phantom `agent.parentAgent` property (never set by ReactLoopAgent).
+      const header = (agent.session as { header: Record<string, unknown> }).header
+      header.origin = 'subagent'
+      header.parentSession = 'parent-session-x'
+    }
+    return agent as unknown as Agent
   }
 
   function setup(config: Partial<HooksConfig> = {}) {
@@ -1378,7 +1384,7 @@ describe('hooks.ts — subagent map (P2b, spec #5)', () => {
     expect(routed.calls.filter((c) => c.args[0] === 'map')).toHaveLength(1)
   })
 
-  it('the root agent (no parent) is never armed — its map arrives at session-start', async () => {
+  it('the root agent (no subagent header marker) is never armed', async () => {
     root = makeTmpRoot('dsh-cg-p2b-submap-root-')
     repo = makeGraphRepo(root)
     const { listeners, routed } = setup()
@@ -1387,6 +1393,55 @@ describe('hooks.ts — subagent map (P2b, spec #5)', () => {
     const decision = await firePreStep(listeners, agent, ['hi'])
     expect(decision.messages).toHaveLength(1)
     expect(routed.calls).toHaveLength(0)
+  })
+
+  it('the phantom agent.parentAgent property (no header marker) does NOT arm — regression guard', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-submap-phantom-')
+    repo = makeGraphRepo(root)
+    const { listeners, routed } = setup()
+    const agent = makeSubagent(join(repo, 'src'), true)
+    // ReactLoopAgent never sets this property; detection via it is a bug.
+    ;(agent as unknown as Record<string, unknown>).parentAgent = makeAgent(join(repo, 'src'))
+    fireAgentCreated(listeners, agent)
+    const decision = await firePreStep(listeners, agent, ['hi'])
+    expect(decision.messages).toHaveLength(1)
+    expect(routed.calls).toHaveLength(0)
+  })
+
+  it('session-start of a subagent session skips the FULL map (channel #5 delivers the short one)', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-submap-sessionstart-')
+    repo = makeGraphRepo(root)
+    const { ctx, listeners } = makeCtx()
+    const routed = makeRoutedRunner([{ match: (a) => a[0] === 'map', json: MAP_JSON }])
+    registerHooks(ctx, CONFIG, {
+      state: new SessionStateStore(),
+      spawnBuild: makeBuildFake().spawnBuild,
+      pluginName: 'dsh-context-graph',
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      processCwd: () => repo,
+    }, routed.runner)
+    const agent = makeSubagent(join(repo, 'src'))
+    await fireSessionStart(listeners, agent)
+    expect(agent.inject).not.toHaveBeenCalled()
+    expect(routed.calls).toHaveLength(0)
+  })
+
+  it('with injectSubagentMap=false a subagent session keeps the FULL session-start map (fallback)', async () => {
+    root = makeTmpRoot('dsh-cg-p2b-submap-fallback-')
+    repo = makeGraphRepo(root)
+    const { ctx, listeners } = makeCtx()
+    const routed = makeRoutedRunner([{ match: (a) => a[0] === 'map', json: MAP_JSON }])
+    registerHooks(ctx, { ...CONFIG, injectSubagentMap: false }, {
+      state: new SessionStateStore(),
+      spawnBuild: makeBuildFake().spawnBuild,
+      pluginName: 'dsh-context-graph',
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      processCwd: () => repo,
+    }, routed.runner)
+    const agent = makeSubagent(join(repo, 'src'))
+    await fireSessionStart(listeners, agent)
+    expect(agent.inject).toHaveBeenCalledTimes(1)
+    expect(injectedText(agent)).toContain('repo map — 3 files')
   })
 
   it('injectSubagentMap=false: no agent/created listener at all', async () => {

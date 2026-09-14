@@ -17,9 +17,11 @@ declare module '@deepseek-ai/dsh-agent' {
     /** Absolute working directory the session was created in, if any. */
     readonly cwd?: string
     /**
-     * Subagent marker (P2b, verified 2026-09-13 against
-     * packages/core/agent/src/index.ts: `origin?: 'subagent'`,
-     * `parentSession?: SessionId`).
+     * Subagent marker (P2b, verified 2026-09-14 against the host runtime):
+     * set by the in-process driver's `childSessionMeta`
+     * (packages/subagent/subagent/src/child-agent.ts) and carried by the
+     * SessionHeader type (packages/session/session-format): durable across
+     * persistence/resume.
      */
     readonly origin?: 'subagent'
     readonly parentSession?: SessionId
@@ -38,9 +40,12 @@ declare module '@deepseek-ai/dsh-agent' {
    * `session.header.cwd` (repo resolution), and calls `inject` to queue
    * model-facing context for the next request (never a wake-up).
    *
-   * ANTI-DRIFT: `parentAgent` verified 2026-09-13 against the host
-   * (packages/core/agent/src/index.ts — `readonly parentAgent?: Agent`,
-   * present for child ownership, absent for the session's root agent).
+   * ANTI-DRIFT (verified 2026-09-14 against the host RUNTIME): `parentAgent`
+   * exists in the public Agent d.ts but is NOT implemented on the concrete
+   * agent (ReactLoopAgent exposes id/options/session/scope/ctx/inbox only) —
+   * reading it always yields undefined. The reliable subagent marker is the
+   * durable session-header field: `header.origin === 'subagent'` (fallback:
+   * `header.parentSession`). See `isSubagentAgent` in src/hooks.ts.
    */
   export interface Agent {
     readonly id: SessionId

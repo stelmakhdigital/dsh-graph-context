@@ -125,6 +125,29 @@ function agentSessionCwd(agent: Agent): string | undefined {
   }
 }
 
+/**
+ * Whether the agent is a subagent of another session (P2b, spec #5).
+ *
+ * ANTI-DRIFT (verified 2026-09-14 against the host runtime): the subagent
+ * marker is the DURABLE session-header field set by the in-process driver
+ * (`childSessionMeta`: `origin: 'subagent'`, `parentSession`). The
+ * `Agent.parentAgent` property exists in the public d.ts but is NOT
+ * implemented on the concrete agent (ReactLoopAgent) — it is always
+ * undefined at runtime, so it must never be used for detection.
+ * `parentSession` alone is a fallback (fork lineage also sets it; the
+ * subagent origin is the precise marker).
+ */
+export function isSubagentAgent(agent: Agent): boolean {
+  try {
+    const header = agent.session?.header
+    if (header === undefined) return false
+    if (header.origin === 'subagent') return true
+    return typeof header.parentSession === 'string' && header.parentSession !== ''
+  } catch {
+    return false
+  }
+}
+
 function agentId(agent: Agent): string {
   try {
     return String(agent.id)
@@ -218,6 +241,11 @@ export async function handleSessionStart(
       deps)
     return
   }
+
+  // Subagents get the SHORT map through the spec #5 channel (armed at
+  // agent/created, delivered at their first pre-step) — the full-budget
+  // session-start map would duplicate it. Root agents keep the full map.
+  if (config.injectSubagentMap && isSubagentAgent(agent)) return
 
   // Graph exists: pull the map, render within budget, inject for next request.
   const dir = anchor.graphRepoRoot ?? root
@@ -707,8 +735,7 @@ export function handleAgentCreated(
   if (!config.injectSubagentMap) return
   try {
     // A live handle may throw on property access once disposed; defensive.
-    const parent = agent.parentAgent
-    if (parent === undefined) return
+    if (!isSubagentAgent(agent)) return
     const anchor = sessionAnchor(agent, deps)
     if (anchor === undefined || anchor.outsideGit) return
     const root = anchor.gitRoot
