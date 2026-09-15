@@ -179,6 +179,18 @@ export class SessionStateStore {
     }
   }
 
+  /**
+   * Mark every known (session, repo) state for the repo dirty (P2c #17 file
+   * watcher: the user edited in an IDE, no edit-tool event will come).
+   * Unknown sessions are not created — the watcher marks what exists.
+   */
+  markRepoDirty(gitRoot: string): void {
+    for (const [key, state] of this.states) {
+      const repo = key.split('\0')[1]
+      if (repo === gitRoot) state.dirty = true
+    }
+  }
+
   /** Mark the (session, repo) graph dirty (a source edit happened). */
   markDirty(sessionId: string, gitRoot: string | undefined): void {
     this.get(sessionId, gitRoot).dirty = true

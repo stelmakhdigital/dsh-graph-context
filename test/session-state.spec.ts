@@ -59,6 +59,25 @@ describe('session-state.ts — per-(session, repo) state', () => {
   })
 })
 
+describe('session-state.ts — P2c #17: markRepoDirty (file watcher)', () => {
+  it('marks every known (session, repo) state for the repo dirty', () => {
+    const store = new SessionStateStore()
+    store.get('s1', '/r')
+    store.get('s2', '/r')
+    store.get('s3', '/other')
+    store.markRepoDirty('/r')
+    expect(store.isDirty('s1', '/r')).toBe(true)
+    expect(store.isDirty('s2', '/r')).toBe(true)
+    expect(store.isDirty('s3', '/other')).toBe(false)
+  })
+
+  it('is a no-op for a repo no session touched yet', () => {
+    const store = new SessionStateStore()
+    store.markRepoDirty('/unknown')
+    expect(store.isDirty('s1', '/unknown')).toBe(false) // no state was created
+  })
+})
+
 describe('session-state.ts — build lock', () => {
   let root: string
 

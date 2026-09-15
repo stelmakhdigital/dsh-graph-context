@@ -45,6 +45,7 @@
           #     provider: openai
           #     apiKey: ollama          # or apiKeyEnv: NAME (ambient GRAFT_API_KEY is never read)
           tool: false
+        watcher: false  # P2c #17 — file watcher over sources (IDE/TUI scenario)
         # host tool names whose success marks the graph dirty (P1)
         editToolNames: ['write', 'edit']
         # pre-step retrieval shape (P2a): sourced (DSH default — crux inlined),

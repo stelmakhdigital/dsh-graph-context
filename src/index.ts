@@ -14,6 +14,7 @@ import type { Context, SettingsService } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import z from '@deepseek-ai/schemastery'
 import { runGraph, runGraphJson, spawnDetachedBuild } from './cli.ts'
+import { startChokidarWatcher } from './watcher.ts'
 import { registerHooks, type HooksConfig } from './hooks.ts'
 import { recordToolCall } from './metrics.ts'
 import { installSkill } from './skill.ts'
@@ -65,6 +66,8 @@ export interface Config {
   deep: DeepConfig
   /** Host tool names whose success marks the graph dirty (P1). */
   editToolNames: string[]
+  /** File watcher over repo sources (P2c #17); default off. */
+  watcher: boolean
   /**
    * Pre-step retrieval shape (P2a, spec #1). Local/small models often skip
    * the follow-up `ask --source`, so the DSH default is `sourced`: the top
@@ -158,6 +161,7 @@ export const Config: z<Config> = z.object({
   reinjectAfterCompaction: z.boolean().default(true),
   toolOrder: z.boolean().default(true),
   blastOnResume: z.boolean().default(true),
+  watcher: z.boolean().default(false),
 })
 
 /**
@@ -211,6 +215,7 @@ export function normalizeConfig(raw: Partial<Config> | null | undefined): Config
     reinjectAfterCompaction: source.reinjectAfterCompaction ?? true,
     toolOrder: source.toolOrder ?? true,
     blastOnResume: source.blastOnResume ?? true,
+    watcher: source.watcher === true,
   }
   return out
 }
@@ -319,6 +324,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     reinjectAfterCompaction: config.reinjectAfterCompaction,
     toolOrder: config.toolOrder,
     blastOnResume: config.blastOnResume,
+    watcher: config.watcher,
   }
   registerHooks(ctx, hooksConfig, {
     state,
@@ -327,6 +333,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     pluginName: name,
     logger,
     gitDirty: isGitDirty,
+    startRepoWatcher: config.watcher ? startChokidarWatcher : undefined,
     recordMetric: config.metrics
       ? (sessionId, kind) => { recordToolCall(sessionId, kind) }
       : undefined,
@@ -361,7 +368,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     logger.info(`dsh-context-graph: skill ready at ${skill.path}`)
   }
 
-  logger.info(`dsh-context-graph: loaded (tools=${config.tools}, sessionMap=${config.injectSessionMap}, autoBuild=${config.autoBuild}, promptHits=${config.injectPromptHits}/${config.injectMode}, blast=${config.injectBlastRadius}, autoSync=${config.autoSync}, nudge=${config.nudgeOnBlindSearch}, scope=${config.scopeFromLastEdit}, metrics=${config.metrics}, guardWiring=${config.guardWiringReads}, subagentMap=${config.injectSubagentMap}, compactionReinject=${config.reinjectAfterCompaction}, toolOrder=${config.toolOrder}, blastOnResume=${config.blastOnResume}, deepTool=${config.deep.tool})`)
+  logger.info(`dsh-context-graph: loaded (tools=${config.tools}, sessionMap=${config.injectSessionMap}, autoBuild=${config.autoBuild}, promptHits=${config.injectPromptHits}/${config.injectMode}, blast=${config.injectBlastRadius}, autoSync=${config.autoSync}, nudge=${config.nudgeOnBlindSearch}, scope=${config.scopeFromLastEdit}, metrics=${config.metrics}, guardWiring=${config.guardWiringReads}, subagentMap=${config.injectSubagentMap}, compactionReinject=${config.reinjectAfterCompaction}, toolOrder=${config.toolOrder}, blastOnResume=${config.blastOnResume}, deepTool=${config.deep.tool}, watcher=${config.watcher})`)
 }
 
 // Re-exported for consumers that compose the plugin programmatically (e.g.

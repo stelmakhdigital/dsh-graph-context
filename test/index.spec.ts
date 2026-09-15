@@ -91,7 +91,7 @@ describe('index.ts — plugin contract', () => {
     const dict = (Config as unknown as { meta: { dict: Record<string, unknown> } }).meta.dict
     const keys = Object.keys(dict).sort()
     expect(keys).toEqual([
-      'autoBuild', 'autoSync', 'blastOnResume', 'buildTimeoutMs', 'deep',
+      'autoBuild', 'autoSync', 'blastOnResume', 'buildTimeoutMs', 'deep', 'watcher',
       'editToolNames', 'graphPath', 'guardWiringReads', 'injectBlastRadius',
       'injectMode', 'injectPromptHits', 'injectSessionMap', 'injectSubagentMap',
       'maxInjectBytes', 'metrics', 'nudgeOnBlindSearch', 'promptMinChars',

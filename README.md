@@ -90,6 +90,7 @@ Defaults in the bundle overlay (`cordis.patch.yml`) enable the full stack; an em
 | `toolOrder` | `true` | (P2b) list the graph tools first in the assembled prompt (`system-prompt/assemble`); a no-op where the host does not expose that event. |
 | `blastOnResume` | `true` | (P2c) inject the short diff blast at session RESUME when the working tree is dirty ("what can this uncommitted work break"). |
 | `deep` | `false` / object | (P2c) local-LLM deep pass. Object form: `{ tool, model, baseUrl, provider, apiKey, apiKeyEnv }` — registers the `graph_enrich` tool (`tool: true`), pointed at an OpenAI-compatible LOCAL endpoint (default `http://127.0.0.1:11434/v1`, Ollama). The key comes only from `apiKey`/`apiKeyEnv` — the ambient `GRAFT_API_KEY` is never read. Legacy `deep: true/false` rows mean `tool` on/off. |
+| `watcher` | `false` | (P2c) file watcher (chokidar) over the session repo sources: external edits (e.g. the user's IDE, TUI scenario) mark the graph dirty without waiting for an edit-tool event — the existing turn-stop auto-sync then rebuilds. Off by default (noise, CPU, sandbox). Ignores `graft/`, `.git/`, `node_modules/`, dotfiles. |
 
 User overlay (a patch replaces a row's **entire** config — restate every key you want to keep), e.g. from `cordis.yml.example`:
 

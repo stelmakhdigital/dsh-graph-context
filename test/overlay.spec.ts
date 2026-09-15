@@ -69,6 +69,7 @@ describe('cordis.yml.example — user overlay', () => {
       'injectMode', 'injectPromptHits', 'injectSessionMap', 'injectSubagentMap',
       'maxInjectBytes', 'metrics', 'nudgeOnBlindSearch', 'promptMinChars',
       'reinjectAfterCompaction', 'scopeFromLastEdit', 'timeoutMs', 'toolOrder', 'tools',
+      'watcher',
     ].sort())
     expect(typeof row?.config.graphPath).toBe('string')
     expect(row?.config.graphPath).not.toBe('')

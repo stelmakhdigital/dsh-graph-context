@@ -29,6 +29,7 @@
           #     provider: openai
           #     apiKey: ollama          # or apiKeyEnv: NAME (ambient GRAFT_API_KEY is never read)
           tool: false
+        watcher: false  # P2c #17 — file watcher over sources (IDE/TUI scenario)
         editToolNames: ['write', 'edit']
         injectMode: sourced
         nudgeOnBlindSearch: true

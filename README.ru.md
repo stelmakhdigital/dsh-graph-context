@@ -89,6 +89,7 @@ P2a уточняет push для локальных моделей, каждое
 | `toolOrder` | `true` | (P2b) graph-tools — первыми в собранном промпте (`system-prompt/assemble`); no-op, если хост не отдаёт событие. |
 | `blastOnResume` | `true` | (P2c) при RESUME сессии с грязным рабочим деревом — короткий diff-blast («что может сломать этот незакоммиченный код»). |
 | `deep` | `false` / объект | (P2c) локальный LLM deep-pass. Форма объекта: `{ tool, model, baseUrl, provider, apiKey, apiKeyEnv }` — регистрирует tool `graph_enrich` (`tool: true`), направленный на ЛОКАЛЬНЫЙ OpenAI-совместимый эндпоинт (default `http://127.0.0.1:11434/v1`, Ollama). Ключ — только из `apiKey`/`apiKeyEnv`; ambient `GRAFT_API_KEY` никогда не читается. Старые `deep: true/false` = `tool` вкл/выкл. |
+| `watcher` | `false` | (P2c) файл-вотчер (chokidar) по исходникам репо сессии: внешние правки (напр. IDE пользователя, TUI-сценарий) помечают граф dirty без ожидания edit-tool — авто-синк на turn-stop пересоберёт его. По умолчанию выключен (шум, CPU, sandbox). Игнорирует `graft/`, `.git/`, `node_modules/`, dotfiles. |
 
 Оверлей пользователя (патч заменяет **весь** конфиг строки — переписывайте все ключи, которые хотите сохранить), например из `cordis.yml.example`:
 

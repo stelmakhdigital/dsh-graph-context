@@ -51,6 +51,7 @@ const CONFIG: HooksConfig = {
   reinjectAfterCompaction: true,
   toolOrder: true,
   blastOnResume: true,
+  watcher: false,
 }
 
 interface Injected {
@@ -1860,5 +1861,121 @@ describe('hooks.ts — session-start resume blast (P2c #3)', () => {
     const agent = makeAgent(join(repo, 'src'))
     await fireSessionStart(listeners, agent, 'resume')
     expect(routed.calls.filter((c) => c.args[0] === 'blast')).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// session-start file watcher (P2c #17)
+// ---------------------------------------------------------------------------
+
+interface WatcherCall {
+  root: string
+  onChange: (relPath: string) => void
+}
+
+function makeWatcherFake() {
+  const calls: WatcherCall[] = []
+  let failing = false
+  const startRepoWatcher = async (repoRoot: string, onChange: (relPath: string) => void) => {
+    if (failing) throw new Error('fs watcher failed to start')
+    calls.push({ root: repoRoot, onChange })
+    return { close: async () => undefined }
+  }
+  return { startRepoWatcher, calls, setFailing: (v: boolean) => { failing = v } }
+}
+
+describe('hooks.ts — session-start file watcher (P2c #17)', () => {
+  let root: string
+  let repo: string
+
+  afterAll(() => removeTmpRoot(root))
+
+  function setupWatcher(config: Partial<HooksConfig> = {}, watcher: ReturnType<typeof makeWatcherFake> | undefined = undefined) {
+    const state = new SessionStateStore()
+    const { ctx, listeners } = makeCtx()
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const routes: Array<{ match: (a: string[]) => boolean; json?: unknown; code?: number }> = [
+      { match: (a) => a[0] === 'map', json: MAP_JSON },
+    ]
+    const routed = makeRoutedRunner(routes)
+    registerHooks(ctx, { ...CONFIG, ...config }, {
+      state,
+      spawnBuild: makeBuildFake().spawnBuild,
+      pluginName: 'dsh-context-graph',
+      logger,
+      processCwd: () => repo,
+      ...(watcher !== undefined ? { startRepoWatcher: watcher.startRepoWatcher } : {}),
+    }, routed.runner)
+    return { listeners, state, logger, routed }
+  }
+
+  it('watcher on: session-start starts the repo watcher and marks the session dirty on change', async () => {
+    root = makeTmpRoot('dsh-cg-p2c-watch-on-')
+    repo = makeGraphRepo(root)
+    const watcher = makeWatcherFake()
+    const { listeners, state } = setupWatcher({ watcher: true }, watcher)
+    await fireSessionStart(listeners, makeAgent(join(repo, 'src')))
+    expect(watcher.calls).toHaveLength(1)
+    expect(watcher.calls[0]!.root).toBe(repo)
+    expect(state.isDirty('session-x', repo)).toBe(false)
+    watcher.calls[0]!.onChange('src/auth.ts')
+    expect(state.isDirty('session-x', repo)).toBe(true)
+  })
+
+  it('watcher off (default): the factory is never called', async () => {
+    root = makeTmpRoot('dsh-cg-p2c-watch-off-')
+    repo = makeGraphRepo(root)
+    const watcher = makeWatcherFake()
+    const { listeners } = setupWatcher({}, watcher)
+    await fireSessionStart(listeners, makeAgent(join(repo, 'src')))
+    expect(watcher.calls).toHaveLength(0)
+  })
+
+  it('repeated session-start for the same repo starts the watcher only once', async () => {
+    root = makeTmpRoot('dsh-cg-p2c-watch-dedup-')
+    repo = makeGraphRepo(root)
+    const watcher = makeWatcherFake()
+    const { listeners } = setupWatcher({ watcher: true }, watcher)
+    await fireSessionStart(listeners, makeAgent(join(repo, 'src')))
+    await fireSessionStart(listeners, makeAgent(join(repo, 'src')))
+    expect(watcher.calls).toHaveLength(1)
+  })
+
+  it('no repo (outside git): the factory is never called', async () => {
+    root = makeTmpRoot('dsh-cg-p2c-watch-nogit-')
+    repo = makeGraphRepo(root)
+    const watcher = makeWatcherFake()
+    const { listeners } = setupWatcher({ watcher: true }, watcher)
+    const outside = join(root, 'elsewhere')
+    await fireSessionStart(listeners, makeAgent(outside))
+    expect(watcher.calls).toHaveLength(0)
+  })
+
+  it('a failing watcher factory is fail-soft (session-start still injects the map)', async () => {
+    root = makeTmpRoot('dsh-cg-p2c-watch-fail-')
+    repo = makeGraphRepo(root)
+    const watcher = makeWatcherFake()
+    watcher.setFailing(true)
+    const { listeners } = setupWatcher({ watcher: true }, watcher)
+    const agent = makeAgent(join(repo, 'src'))
+    await fireSessionStart(listeners, agent)
+    expect(injectedText(agent)).toContain('repo map — 3 files')
+  })
+
+  it('a subagent session does not (re)start the watcher', async () => {
+    root = makeTmpRoot('dsh-cg-p2c-watch-subagent-')
+    repo = makeGraphRepo(root)
+    const watcher = makeWatcherFake()
+    const { listeners } = setupWatcher({ watcher: true }, watcher)
+    const subagent = {
+      id: 'session-sub',
+      status: 'idle' as const,
+      session: { header: { id: 'session-sub', createdAt: 0, cwd: join(repo, 'src'), origin: 'subagent', parentSession: 'session-x' } },
+      inject: vi.fn(),
+      steer: vi.fn(),
+      followup: vi.fn(),
+    } as unknown as Agent
+    await fireSessionStart(listeners, subagent)
+    expect(watcher.calls).toHaveLength(0)
   })
 })

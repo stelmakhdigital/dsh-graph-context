@@ -1,7 +1,7 @@
 {
   "name": "dsh-context-graph",
-  "version": "0.7.0",
-  "description": "Native DeepSeek Harness plugin: local repo context graph (engine: the external @nanonets/graft CLI) \u2014 tools + lifecycle inject + fail-open",
+  "version": "0.8.0",
+  "description": "Native DeepSeek Harness plugin: local repo context graph (engine: the external @nanonets/graft CLI) — tools + lifecycle inject + fail-open",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -55,5 +55,8 @@
     "context-graph",
     "code-intelligence"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "chokidar": "4.0.3"
+  }
 }

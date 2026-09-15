@@ -87,8 +87,19 @@ export interface HooksConfig {
   reinjectAfterCompaction: boolean
   /** List graph tools first in the assembled prompt (P2b, spec #11). */
   toolOrder: boolean
+  /**
+   * File watcher (P2c #17): chokidar over the session repo sources marks the
+   * graph dirty without waiting for an edit-tool event (TUI/IDE scenario).
+   * Default off: noise, CPU, sandbox.
+   */
+  watcher: boolean
   /** Short diff blast at session resume on dirty git (P2c, spec #3). */
   blastOnResume: boolean
+}
+
+/** A started repo file watcher (P2c #17). */
+export interface RepoWatcherHandle {
+  close(): Promise<void> | void
 }
 
 export interface HooksDeps {
@@ -106,6 +117,12 @@ export interface HooksDeps {
     error(message: string): void
   }
   processCwd?: () => string
+  /**
+  /**
+   * Repo watcher seam (P2c #17): start a file watcher on one repo root.
+   * The handle is kept for the process lifetime (bounded by distinct repos).
+   */
+  startRepoWatcher?: (repoRoot: string, onChange: (relPath: string) => void) => Promise<RepoWatcherHandle>
   /**
    * Git-dirty seam (P2c, spec #3): is the working tree dirty at this root?
    * Undefined → the resume-blast hook stays silent (fail-open).
@@ -190,6 +207,7 @@ export async function handleSessionStart(
   config: HooksConfig,
   deps: HooksDeps,
   runGraph: typeof runGraphJson,
+  watcherByRepo: Map<string, RepoWatcherHandle>,
 ): Promise<void> {
   if (!config.injectSessionMap) return
   // Resolve the repo from the session's OWN cwd. When the header carries no
@@ -253,6 +271,23 @@ export async function handleSessionStart(
   // agent/created, delivered at their first pre-step) — the full-budget
   // session-start map would duplicate it. Root agents keep the full map.
   if (config.injectSubagentMap && isSubagentAgent(agent)) return
+
+  // File watcher (P2c #17): sources changed in an IDE mark the graph dirty
+  // without waiting for an edit-tool event. One watcher per repo (dedup via
+  // the registration-level map); fail-open — a watcher problem must never
+  // disturb session orientation.
+  if (config.watcher && deps.startRepoWatcher !== undefined && watcherByRepo.has(root) === false) {
+    try {
+      const handle = await deps.startRepoWatcher(root, (relPath: string) => {
+        deps.state.markRepoDirty(root)
+        deps.logger.info(`dsh-context-graph: watcher marked ${root} dirty via ${relPath}`)
+      })
+      watcherByRepo.set(root, handle)
+      deps.logger.info(`dsh-context-graph: file watcher started for ${root}`)
+    } catch (error) {
+      deps.logger.warn(`dsh-context-graph: file watcher skipped (${errorMessage(error)})`)
+    }
+  }
 
   // Resume on a dirty working tree: the short diff blast answers "what can
   // this uncommitted work break" before the model re-orients (P2c, spec #3).
@@ -913,11 +948,15 @@ export function registerHooks(
   deps: HooksDeps,
   runGraph: typeof runGraphJson,
 ): void {
+  // P2c #17: one watcher per distinct repo root for the process lifetime
+  // (bounded; the flag is off by default so this map stays empty in
+  // practice). The session-start handler captures it.
+  const watcherByRepo = new Map<string, RepoWatcherHandle>()
   if (config.injectSessionMap) {
     ctx.on('agent/session-start', (payload) => {
       // Emit-mode event: the listener must return synchronously. The graph
       // pull is detached so a slow CLI can never block the loop.
-      void handleSessionStart(payload.agent, payload.source, config, deps, runGraph).catch((error: unknown) => {
+      void handleSessionStart(payload.agent, payload.source, config, deps, runGraph, watcherByRepo).catch((error: unknown) => {
         // The invariant: a hook never throws into the agent loop.
         deps.logger.error(`dsh-context-graph: session-start hook failed (${errorMessage(error)})`)
       })
