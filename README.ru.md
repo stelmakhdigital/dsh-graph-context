@@ -4,6 +4,55 @@
 
 Модель получает точные указатели `file:line`, сигнатуры без тел и трассы вызовов вместо слепого grep/read. Всё работает локально через CLI `@nanonets/graft`: индекс никуда не уходит, LLM плагин никогда не вызывает.
 
+## Быстрый старт
+
+«Вставил и работает» (сверено с DSH + плагин v1.0.0). Предвари­тельные условия: Node.js **22.19+ / 24+** и DSH — либо чек-аут [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (его команды запускаются как `pnpm dsh …`), либо глобальный `dsh` в PATH.
+
+**1. CLI движка (один раз на машине, глобально):**
+
+```sh
+npm i -g @nanonets/graft
+graft --help >/dev/null && echo engine-ok
+```
+
+**2. Собрать пакет плагина и поставить его в профиль (один раз):**
+
+```sh
+git clone https://github.com/stelmakhdigital/dsh-graph-context.git
+cd dsh-graph-context
+pnpm i
+pnpm pack            # -> dsh-context-graph-1.0.0.tgz
+```
+
+Далее из того места, где запускается `dsh` (чек-аут harness: `pnpm dsh`):
+
+```sh
+dsh plugin --profile web add /полный/путь/к/dsh-graph-context/dsh-context-graph-1.0.0.tgz
+```
+
+`dsh plugin …` — это pnpm-форвардер внутри каталога профиля; удаление: `dsh plugin --profile web remove dsh-context-graph`. При каждом старте оверлей `cordis.patch.yml` плагина применяется автоматически.
+
+**3. Запуск:**
+
+```sh
+# GUI (web-профиль):
+dsh web                          # -> http://127.0.0.1:3080   (алиас: dsh --profile web)
+
+# Headless разово — cwd сессии = cwd процесса, поэтому сначала cd:
+cd /путь/к/вашему/git-репо
+dsh --profile headless "Опиши структуру этого репозитория"
+```
+
+**4. Проверка, что работает** (хотя бы один из пунктов):
+
+```sh
+dsh --profile web --dump-config | grep dsh-context-graph   # строка есть в стеке профиля
+ls ~/.dsh/skills/graph/SKILL.md                             # user-level скилл (ставится на первом старте)
+graft check .                                               # статус движка в репо
+```
+
+В web-сессии, открытой в git-репо, в контекст модели на старте сессии приходит блок `Repo context graph … repo map — N files · M symbols`, а перед каждым вопросом — `Graph prompt hits` — это плагин работает. В самом первом сессии репо структурный граф строится в фоне (пока он готов — впрыскивается короткий «being built»-указатель вместо мапа).
+
 ## Требования
 
 - Node.js **22.19+ / 24+** (ESM, TypeScript strict)

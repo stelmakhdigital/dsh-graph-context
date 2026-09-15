@@ -4,6 +4,55 @@ Native [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugi
 
 The model gets exact `file:line` pointers, signatures without bodies, and caller/callee traces instead of blind grep/read exploration. Everything runs locally against the `@nanonets/graft` CLI; no index leaves the machine, no LLM is ever invoked by the plugin.
 
+## Quick start
+
+Paste-and-go (verified against DSH + plugin v1.0.0). Prerequisites: Node.js **22.19+ / 24+** and DSH — either the [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) checkout (run its commands as `pnpm dsh …`) or a global `dsh` on your PATH.
+
+**1. Install the engine CLI (once per machine, global):**
+
+```sh
+npm i -g @nanonets/graft
+graft --help >/dev/null && echo engine-ok
+```
+
+**2. Build the plugin package and install it into a profile (once):**
+
+```sh
+git clone https://github.com/stelmakhdigital/dsh-graph-context.git
+cd dsh-graph-context
+pnpm i
+pnpm pack            # -> dsh-context-graph-1.0.0.tgz
+```
+
+Then, from anywhere `dsh` runs (harness checkout: `pnpm dsh`):
+
+```sh
+dsh plugin --profile web add /full/path/to/dsh-graph-context/dsh-context-graph-1.0.0.tgz
+```
+
+`dsh plugin …` is a pnpm forwarder inside the profile directory — remove with `dsh plugin --profile web remove dsh-context-graph`. Every boot re-applies the plugin's `cordis.patch.yml` overlay automatically.
+
+**3. Boot:**
+
+```sh
+# GUI (web profile):
+dsh web                          # -> http://127.0.0.1:3080   (alias: dsh --profile web)
+
+# Headless one-shot — the session's cwd is the process cwd, so cd first:
+cd /path/to/your/git/repo
+dsh --profile headless "Describe the structure of this repo"
+```
+
+**4. Verify it is working** (any of these):
+
+```sh
+dsh --profile web --dump-config | grep dsh-context-graph   # the row is in the profile stack
+ls ~/.dsh/skills/graph/SKILL.md                             # user-level skill (installed on first boot)
+graft check .                                               # engine status in the repo
+```
+
+In a web session opened in a git repo, the model's context gains a `Repo context graph … repo map — N files · M symbols` block at session start and `Graph prompt hits` before each of your questions — that is the plugin working. On the very first session in a repo the structural graph is built in the background (a short "being built" pointer is injected instead of the map until it is ready).
+
 ## Requirements
 
 - Node.js **22.19+ / 24+** (ESM, TypeScript strict)
