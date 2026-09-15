@@ -39,6 +39,7 @@ Code Mode (PTC): all graph tools are callable inside \`run_code\` programs
 - \`graph_blast\` — diff blast radius: the symbols the changed lines touch and the
   downstream dependents that may break (\`base\` to diff against a ref like
   \`origin/main\`). Use before refactoring / for "what breaks if I change X".
+- \`graph_enrich\` — ONLY if enabled in config (\`deep.tool: true\`): on-demand LOCAL LLM deep pass (\`graft build --deep\` against the configured endpoint, e.g. Ollama); expensive — call only when richer symbol summaries are needed.
 
 Rules:
 1. Call a graph tool BEFORE a broad grep/read when the question maps to

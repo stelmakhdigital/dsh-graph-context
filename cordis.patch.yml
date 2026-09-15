@@ -35,7 +35,16 @@
         # structural build timeout, ms
         buildTimeoutMs: 20000
         # LLM pass; never used by hooks (explicit user commands only)
-        deep: false
+        deep:
+          # P2c #7 — local LLM deep pass (graph_enrich). OFF by default:
+          # the pass is CPU-heavy; enable only with a local endpoint (Ollama):
+          #   deep:
+          #     tool: true
+          #     model: qwen2.5-coder:7b
+          #     baseUrl: http://127.0.0.1:11434/v1
+          #     provider: openai
+          #     apiKey: ollama          # or apiKeyEnv: NAME (ambient GRAFT_API_KEY is never read)
+          tool: false
         # host tool names whose success marks the graph dirty (P1)
         editToolNames: ['write', 'edit']
         # pre-step retrieval shape (P2a): sourced (DSH default — crux inlined),

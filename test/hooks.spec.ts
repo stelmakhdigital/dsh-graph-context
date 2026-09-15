@@ -42,7 +42,6 @@ const CONFIG: HooksConfig = {
   buildTimeoutMs: 20_000,
   graphPath: '',
   editToolNames: ['write', 'edit'],
-  deep: false,
   injectMode: 'sourced',
   nudgeOnBlindSearch: true,
   scopeFromLastEdit: false,

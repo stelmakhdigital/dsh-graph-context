@@ -122,11 +122,18 @@ describe('index.ts — plugin contract', () => {
     expect(normalizeConfig({ injectMode: 'map-only' }).injectMode).toBe('map-only')
   })
 
-  it('apply() registers the seven tools with stable names', () => {
+  it('apply() registers the seven structural tools by default (graph_enrich is opt-in)', () => {
     const { registered } = captureApply({})
     expect(registered).toHaveLength(7)
     const names = registered.map((tool) => (tool as { name: string }).name)
-    expect([...names].sort()).toEqual(Object.values(TOOL_NAMES).sort())
+    expect([...names].sort()).toEqual(Object.values(TOOL_NAMES).filter((name) => name !== 'graph_enrich').sort())
+  })
+
+  it('apply() registers graph_enrich when deep.tool is on (P2c #7)', () => {
+    const { registered } = captureApply({ deep: { tool: true, model: 'm', baseUrl: 'http://127.0.0.1:11434/v1' } })
+    expect(registered).toHaveLength(8)
+    const names = registered.map((tool) => (tool as { name: string }).name)
+    expect(names).toContain('graph_enrich')
   })
 
   it('apply() registers a bounded system-prompt pointer section', () => {
@@ -138,9 +145,15 @@ describe('index.ts — plugin contract', () => {
     const lines = section.text.split('\n')
     expect(lines.length).toBeGreaterThanOrEqual(5)
     expect(lines.length).toBeLessThanOrEqual(15)
+    // graph_enrich is opt-in (deep.tool): absent from the default section,
+    // present when the deep tool is on.
     for (const toolName of Object.values(TOOL_NAMES)) {
+      if (toolName === 'graph_enrich') continue
       expect(section.text).toContain(toolName)
     }
+    expect(section.text).not.toContain('graph_enrich')
+    const { sections: deepSections } = captureApply({ deep: { tool: true, model: 'm' } })
+    expect(deepSections[0]!.text).toContain('graph_enrich')
     // the fallback guidance must be present
     expect(section.text).toContain('GRAPH_MISSING')
   })
@@ -206,7 +219,7 @@ describe('index.ts — plugin contract', () => {
       graphPath: '',
       timeoutMs: 8000,
       buildTimeoutMs: 20_000,
-      deep: false,
+      deep: { tool: false, model: '', baseUrl: '', provider: 'openai', apiKey: '', apiKeyEnv: '' },
       editToolNames: ['write', 'edit'],
     })
     const clamped = normalizeConfig({ maxInjectBytes: -1, timeoutMs: Number.NaN, editToolNames: ['bash', '', null as never] })

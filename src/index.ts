@@ -13,12 +13,12 @@ const execFileAsync = promisify(execFile)
 import type { Context, SettingsService } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import z from '@deepseek-ai/schemastery'
-import { runGraphJson, spawnDetachedBuild } from './cli.ts'
+import { runGraph, runGraphJson, spawnDetachedBuild } from './cli.ts'
 import { registerHooks, type HooksConfig } from './hooks.ts'
 import { recordToolCall } from './metrics.ts'
 import { installSkill } from './skill.ts'
 import { releaseBuildLock, SessionStateStore } from './session-state.ts'
-import { buildGraphTools, TOOL_NAMES, type ToolsConfig } from './tools.ts'
+import { buildGraphTools, TOOL_NAMES, type DeepConfig, type ToolsConfig } from './tools.ts'
 
 /** Settings-UI namespace for the plugin's own section (lowercase hyphenated). */
 const SETTINGS_NAMESPACE = 'context-graph'
@@ -57,8 +57,12 @@ export interface Config {
   timeoutMs: number
   /** Structural build timeout, ms. */
   buildTimeoutMs: number
-  /** LLM pass; hooks never use it (explicit user commands only). */
-  deep: boolean
+  /**
+   * Local-LLM deep pass (P2c #7). Only the explicit graph_enrich tool reads
+   * it (registered when `deep.tool` is on); hooks never run the deep pass.
+   * Legacy boolean rows are normalized to `{tool: <bool>, …defaults}`.
+   */
+  deep: DeepConfig
   /** Host tool names whose success marks the graph dirty (P1). */
   editToolNames: string[]
   /**
@@ -130,7 +134,19 @@ export const Config: z<Config> = z.object({
   graphPath: z.string().default(''),
   timeoutMs: z.number().default(8000),
   buildTimeoutMs: z.number().default(20000),
-  deep: z.boolean().default(false),
+  // P2c #7: legacy boolean rows (deep: true/false) and the new object form
+  // are both accepted; normalizeConfig unifies them into DeepConfig.
+  deep: z.union([
+    z.boolean(),
+    z.object({
+      tool: z.boolean().default(false),
+      model: z.string().default(''),
+      baseUrl: z.string().default(''),
+      provider: z.string().default('openai'),
+      apiKey: z.string().default(''),
+      apiKeyEnv: z.string().default(''),
+    }),
+  ]).default(false),
   editToolNames: z.array(z.string()).default(['write', 'edit']),
   // schemastery (v3.18.2) has no z.enum: a closed set of literals is a union of consts.
   injectMode: z.union([z.const('pointers'), z.const('sourced'), z.const('map-only')]).default('sourced'),
@@ -149,6 +165,23 @@ export const Config: z<Config> = z.object({
  * row (or a future host) may still pass sparse values; the plugin must
  * behave identically either way.
  */
+function normalizeDeep(raw: unknown): DeepConfig {
+  const defaults: DeepConfig = { tool: false, model: '', baseUrl: '', provider: 'openai', apiKey: '', apiKeyEnv: '' }
+  if (typeof raw === 'boolean') return { ...defaults, tool: raw }
+  if (raw !== null && typeof raw === 'object') {
+    const source = raw as Partial<DeepConfig>
+    return {
+      tool: source.tool === true,
+      model: typeof source.model === 'string' ? source.model : '',
+      baseUrl: typeof source.baseUrl === 'string' ? source.baseUrl : '',
+      provider: typeof source.provider === 'string' && source.provider !== '' ? source.provider : 'openai',
+      apiKey: typeof source.apiKey === 'string' ? source.apiKey : '',
+      apiKeyEnv: typeof source.apiKeyEnv === 'string' ? source.apiKeyEnv : '',
+    }
+  }
+  return defaults
+}
+
 export function normalizeConfig(raw: Partial<Config> | null | undefined): Config {
   const source = raw ?? {}
   const out: Config = {
@@ -163,7 +196,7 @@ export function normalizeConfig(raw: Partial<Config> | null | undefined): Config
     graphPath: typeof source.graphPath === 'string' ? source.graphPath : '',
     timeoutMs: positiveInt(source.timeoutMs, 8000),
     buildTimeoutMs: positiveInt(source.buildTimeoutMs, 20000),
-    deep: source.deep ?? false,
+    deep: normalizeDeep(source.deep),
     editToolNames: Array.isArray(source.editToolNames)
       ? source.editToolNames.filter((entry): entry is string => typeof entry === 'string' && entry !== '')
       : ['write', 'edit'],
@@ -218,6 +251,9 @@ function systemPromptSection(config: Config): string {
       + `${TOOL_NAMES.findAll} (ranked regex), ${TOOL_NAMES.checkFreshness} (drift), ${TOOL_NAMES.blast} (diff blast radius: what breaks if these lines change).`,
     'Before broad grep/read, call graph_repo_map (unfamiliar repo) or graph_find_code (a concrete question).',
     'After larger edits, call graph_check_freshness; on drift run `graft build` (structural, no LLM).',
+    ...(config.deep.tool
+      ? [`${TOOL_NAMES.enrich} (on-demand LOCAL LLM deep pass against the configured endpoint, deep.* config; expensive — call only when richer symbol summaries are needed).`]
+      : []),
     'Never read graft/.graph/wiring.json or the full graft/INDEX.md — the tools are the interface.',
     `If a graph tool reports GRAPH_MISSING or GRAPH_CLI_MISSING, fall back to ordinary read/grep${config.tools ? '' : ''} and note the graph is unavailable.`,
   ].join('\n')
@@ -233,9 +269,11 @@ export function apply(ctx: Context, rawConfig: Config): void {
       graphPath: config.graphPath,
       timeoutMs: config.timeoutMs,
       maxInjectBytes: config.maxInjectBytes,
+      deep: config.deep,
     }
     const tools = buildGraphTools(toolsConfig, {
       runGraphJson,
+      runGraphText: runGraph,
       onNpxFallback: (note) => logger.warn(`dsh-context-graph: ${note}`),
     })
     ctx.tools.register(tools.findCode)
@@ -245,6 +283,10 @@ export function apply(ctx: Context, rawConfig: Config): void {
     ctx.tools.register(tools.repoMap)
     ctx.tools.register(tools.checkFreshness)
     ctx.tools.register(tools.blast)
+    // P2c #7: the local-LLM deep tool is opt-in (deep.tool) and only then
+    // exists; registration is conditional so the default surface stays at
+    // the seven structural tools.
+    if (tools.enrich !== undefined) ctx.tools.register(tools.enrich)
   }
 
   // ---- system prompt pointer ------------------------------------------------
@@ -268,7 +310,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
     buildTimeoutMs: config.buildTimeoutMs,
     graphPath: config.graphPath,
     editToolNames: config.editToolNames,
-    deep: config.deep,
     injectMode: config.injectMode,
     nudgeOnBlindSearch: config.nudgeOnBlindSearch,
     scopeFromLastEdit: config.scopeFromLastEdit,
@@ -320,13 +361,13 @@ export function apply(ctx: Context, rawConfig: Config): void {
     logger.info(`dsh-context-graph: skill ready at ${skill.path}`)
   }
 
-  logger.info(`dsh-context-graph: loaded (tools=${config.tools}, sessionMap=${config.injectSessionMap}, autoBuild=${config.autoBuild}, promptHits=${config.injectPromptHits}/${config.injectMode}, blast=${config.injectBlastRadius}, autoSync=${config.autoSync}, nudge=${config.nudgeOnBlindSearch}, scope=${config.scopeFromLastEdit}, metrics=${config.metrics}, guardWiring=${config.guardWiringReads}, subagentMap=${config.injectSubagentMap}, compactionReinject=${config.reinjectAfterCompaction}, toolOrder=${config.toolOrder}, blastOnResume=${config.blastOnResume})`)
+  logger.info(`dsh-context-graph: loaded (tools=${config.tools}, sessionMap=${config.injectSessionMap}, autoBuild=${config.autoBuild}, promptHits=${config.injectPromptHits}/${config.injectMode}, blast=${config.injectBlastRadius}, autoSync=${config.autoSync}, nudge=${config.nudgeOnBlindSearch}, scope=${config.scopeFromLastEdit}, metrics=${config.metrics}, guardWiring=${config.guardWiringReads}, subagentMap=${config.injectSubagentMap}, compactionReinject=${config.reinjectAfterCompaction}, toolOrder=${config.toolOrder}, blastOnResume=${config.blastOnResume}, deepTool=${config.deep.tool})`)
 }
 
 // Re-exported for consumers that compose the plugin programmatically (e.g.
 // headless hosts building the tool set without a Cordis context).
 export { buildGraphTools, TOOL_NAMES }
-export type { ToolsConfig, ToolsDeps } from './tools.ts'
+export type { DeepConfig, ToolsConfig, ToolsDeps } from './tools.ts'
 export type { HooksConfig, HooksDeps } from './hooks.ts'
 export { SessionStateStore } from './session-state.ts'
 export type { Agent as DshAgent } from '@deepseek-ai/dsh-agent'

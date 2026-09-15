@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { join } from 'node:path'
 import type { GraphSpawnOptions, GraphSpawnResult } from '../src/cli.ts'
-import { GraphError, type runGraphJson } from '../src/cli.ts'
+import { GraphError, type runGraph, type runGraphJson, type GraphSpawnResult as SpawnResult } from '../src/cli.ts'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { buildGraphTools, TOOL_NAMES, type ToolFailure } from '../src/tools.ts'
 import { makeGraphDir, makeGitRepo, makeTmpRoot, removeTmpRoot } from './fixtures.ts'
@@ -174,7 +174,10 @@ afterAll(() => removeTmpRoot(REPO))
 // ---------------------------------------------------------------------------
 
 describe('tools.ts — stable contract', () => {
-  it('exposes exactly the seven graph_* names (snake_case, ≤ 64)', () => {
+  it('exposes exactly the eight graph_* names (snake_case, ≤ 64)', () => {
+    // graph_enrich is the opt-in local-LLM deep tool (P2c #7): its name is
+    // part of the vocabulary even when deep.tool is off (registration is
+    // conditional, the name is not).
     expect(Object.values(TOOL_NAMES)).toEqual([
       'graph_find_code',
       'graph_file_api',
@@ -183,17 +186,18 @@ describe('tools.ts — stable contract', () => {
       'graph_repo_map',
       'graph_check_freshness',
       'graph_blast',
+      'graph_enrich',
     ])
     for (const toolName of Object.values(TOOL_NAMES)) {
       expect(toolName).toMatch(/^[a-z][a-z0-9_]{0,63}$/)
     }
   })
 
-  it('buildGraphTools returns definitions with matching names', () => {
+  it('buildGraphTools returns definitions with matching names (enrich opt-in)', () => {
     const fake = fakeRunner(() => ({ json: ASK_JSON }))
     const tools = buildGraphTools(CONFIG, { runGraphJson: fake.runner })
     const names = Object.values(tools).map((tool) => tool.name)
-    expect([...names].sort()).toEqual(Object.values(TOOL_NAMES).sort())
+    expect([...names].sort()).toEqual(Object.values(TOOL_NAMES).filter((name) => name !== 'graph_enrich').sort())
   })
 })
 
@@ -491,5 +495,158 @@ describe('tools.ts — cwd resolution', () => {
     await tools.repoMap.execute({}, fakeExec(join(otherRepo, 'x')))
     expect(fake.calls[1]!.options.cwd).toBe(otherRepo)
     removeTmpRoot(otherRepo)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// graph_enrich (P2c #7 — explicit local LLM deep pass)
+// ---------------------------------------------------------------------------
+
+
+interface TextCall {
+  args: string[]
+  options: GraphSpawnOptions
+}
+
+type TextHandler = (args: readonly string[], options: GraphSpawnOptions) => SpawnResult | Error
+
+function fakeTextRunner(handler: TextHandler) {
+  const calls: TextCall[] = []
+  const runner = async (args: readonly string[], options: GraphSpawnOptions): Promise<SpawnResult> => {
+    calls.push({ args: [...args], options })
+    const outcome = handler(args, options)
+    if (outcome instanceof Error) throw outcome
+    return outcome
+  }
+  return { runner, calls }
+}
+
+const DEEP_CONFIG = {
+  ...CONFIG,
+  deep: { tool: true, model: 'qwen2.5:7b', baseUrl: 'http://127.0.0.1:11434/v1', provider: 'openai', apiKey: 'local-key', apiKeyEnv: '' },
+}
+
+function makeDeepTools(fake: ReturnType<typeof fakeRunner>, text: ReturnType<typeof fakeTextRunner>, config = DEEP_CONFIG) {
+  return buildGraphTools(config, {
+    runGraphJson: fake.runner,
+    runGraphText: text.runner,
+    processCwd: () => REPO_SRC,
+  })
+}
+
+describe('tools.ts — graph_enrich (P2c #7)', () => {
+  it('is not registered by default (deep.tool absent)', () => {
+    // plain CONFIG has no deep → no enrich tool
+    const plain = buildGraphTools(CONFIG, { runGraphJson: (async () => { throw new Error('unused') }) as never, processCwd: () => REPO_SRC })
+    expect(plain.enrich).toBeUndefined()
+  })
+
+  it('is registered only when deep.tool is true', () => {
+    const fake = fakeRunner(() => ({ json: {} }))
+    const text = fakeTextRunner(() => ({ stdout: '', stderr: '', code: 0, viaNpx: false }))
+    const on = makeDeepTools(fake, text, { ...CONFIG, deep: { ...DEEP_CONFIG.deep!, tool: true } })
+    expect(on.enrich).toBeDefined()
+    const off = makeDeepTools(fake, text, { ...CONFIG, deep: { ...DEEP_CONFIG.deep!, tool: false } })
+    expect(off.enrich).toBeUndefined()
+  })
+
+  it('fails DEEP_MODEL_MISSING without any CLI call when deep.model is empty', async () => {
+    const fake = fakeRunner(() => ({ json: {} }))
+    const text = fakeTextRunner(() => ({ stdout: '', stderr: '', code: 0, viaNpx: false }))
+    const tools = makeDeepTools(fake, text, { ...CONFIG, deep: { ...DEEP_CONFIG.deep!, model: '  ' } })
+    const value = asValue<{ ok: boolean; error?: string; hint?: string }>(
+      await tools.enrich!.execute({}, fakeExec(REPO_SRC)),
+    )
+    expect(value.ok).toBe(false)
+    expect(value.error).toBe('DEEP_MODEL_MISSING')
+    expect(text.calls).toHaveLength(0)
+  })
+
+  it('fails DEEP_KEY_MISSING without any CLI call when neither apiKey nor apiKeyEnv resolves', async () => {
+    const fake = fakeRunner(() => ({ json: {} }))
+    const text = fakeTextRunner(() => ({ stdout: '', stderr: '', code: 0, viaNpx: false }))
+    const tools = makeDeepTools(fake, text, { ...CONFIG, deep: { ...DEEP_CONFIG.deep!, apiKey: '', apiKeyEnv: 'SURELY_UNSET_ENV_1' } })
+    const value = asValue<{ ok: boolean; error?: string; hint?: string }>(
+      await tools.enrich!.execute({}, fakeExec(REPO_SRC)),
+    )
+    expect(value.ok).toBe(false)
+    expect(value.error).toBe('DEEP_KEY_MISSING')
+    expect(text.calls).toHaveLength(0)
+  })
+
+  it('resolves the key from the named env var (deep.apiKeyEnv) — ambient GRAFT_API_KEY is never read', async () => {
+    process.env.DSH_TEST_DEEP_KEY = 'from-env'
+    process.env.GRAFT_API_KEY = 'ambient-must-not-leak'
+    try {
+      const fake = fakeRunner(() => ({ json: {} }))
+      const text = fakeTextRunner(() => ({ stdout: 'ok', stderr: '', code: 0, viaNpx: false }))
+      const tools = makeDeepTools(fake, text, { ...CONFIG, deep: { ...DEEP_CONFIG.deep!, apiKey: '', apiKeyEnv: 'DSH_TEST_DEEP_KEY' } })
+      const value = asValue<{ ok: boolean }>(await tools.enrich!.execute({}, fakeExec(REPO_SRC)))
+      expect(value.ok).toBe(true)
+      expect(text.calls).toHaveLength(1)
+      expect(text.calls[0]!.options.extraEnv).toMatchObject({ GRAFT_API_KEY: 'from-env' })
+    } finally {
+      delete process.env.DSH_TEST_DEEP_KEY
+      delete process.env.GRAFT_API_KEY
+    }
+  })
+
+  it('spawns graft build --deep with ONLY the local LLM env and reports the summary', async () => {
+    const fake = fakeRunner(() => ({ json: {} }))
+    const text = fakeTextRunner(() => ({ stdout: 'deep pass done: 3 files enriched', stderr: '', code: 0, viaNpx: false }))
+    const tools = makeDeepTools(fake, text)
+    const value = asValue<{ ok: boolean; summary?: string }>(await tools.enrich!.execute({}, fakeExec(REPO_SRC)))
+    expect(value.ok).toBe(true)
+    expect(value.summary).toContain('deep pass done')
+    expect(text.calls).toHaveLength(1)
+    const call = text.calls[0]!
+    expect(call.args).toEqual(['build', '--deep', REPO])
+    expect(call.options.cwd).toBe(REPO)
+    // Spec: ONLY these vars are forwarded — key from config, never ambient.
+    expect(call.options.extraEnv).toEqual({
+      GRAFT_PROVIDER: 'openai',
+      GRAFT_BASE_URL: 'http://127.0.0.1:11434/v1',
+      GRAFT_MODEL: 'qwen2.5:7b',
+      GRAFT_API_KEY: 'local-key',
+    })
+    // A local deep pass over a whole repo is allowed to take a long time:
+    // the timeout floor is 10 minutes regardless of the query timeout.
+    expect(call.options.timeoutMs).toBeGreaterThanOrEqual(600_000)
+  })
+
+  it('reports DEEP_FAILED with a stderr tail when the pass exits non-zero', async () => {
+    const fake = fakeRunner(() => ({ json: {} }))
+    const text = fakeTextRunner(() => ({ stdout: '', stderr: 'model rejected: Ollama is not running at 127.0.0.1:11434', code: 1, viaNpx: false }))
+    const tools = makeDeepTools(fake, text)
+    const value = asValue<{ ok: boolean; error?: string; hint?: string }>(await tools.enrich!.execute({}, fakeExec(REPO_SRC)))
+    expect(value.ok).toBe(false)
+    expect(value.error).toBe('DEEP_FAILED')
+    expect(value.hint).toContain('Ollama is not running')
+  })
+
+  it('fails open with NO_GIT_ROOT when the cwd is outside any git repository', async () => {
+    const fake = fakeRunner(() => ({ json: {} }))
+    const text = fakeTextRunner(() => ({ stdout: '', stderr: '', code: 0, viaNpx: false }))
+    const tools = buildGraphTools(DEEP_CONFIG, {
+      runGraphJson: fake.runner,
+      runGraphText: text.runner,
+      processCwd: () => '/no-such-directory-anywhere',
+    })
+    const value = asValue<{ ok: boolean; error?: string }>(await tools.enrich!.execute({}, fakeExec(undefined)))
+    expect(value.ok).toBe(false)
+    expect(value.error).toBe('NO_GIT_ROOT')
+    expect(text.calls).toHaveLength(0)
+  })
+
+  it('fails open when the CLI is missing (seam throws GRAPH_CLI_MISSING)', async () => {
+    const fake = fakeRunner(() => ({ json: {} }))
+    const text = fakeTextRunner(() => {
+      throw new GraphError('GRAPH_CLI_MISSING', 'graft CLI not found', 'npm i -g @nanonets/graft')
+    })
+    const tools = makeDeepTools(fake, text)
+    const value = asValue<{ ok: boolean; error?: string; hint?: string }>(await tools.enrich!.execute({}, fakeExec(REPO_SRC)))
+    expect(value.ok).toBe(false)
+    expect(value.error).toBe('GRAPH_CLI_MISSING')
+    expect(value.hint).toContain('npm i -g')
   })
 })

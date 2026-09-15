@@ -48,7 +48,7 @@ describe('cordis.patch.yml — bundle overlay validity', () => {
       graphPath: '',
       timeoutMs: 8000,
       buildTimeoutMs: 20_000,
-      deep: false,
+      deep: { tool: false },
       editToolNames: ['write', 'edit'],
     })
   })

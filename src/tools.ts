@@ -10,7 +10,7 @@
  * never a thrown error out of the tool body.
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { GraphError, runGraphJson } from './cli.ts'
+import { GraphError, runGraph, runGraphJson } from './cli.ts'
 import {
   formatPointer,
   parsePointer,
@@ -34,6 +34,7 @@ export const TOOL_NAMES = {
   repoMap: 'graph_repo_map',
   checkFreshness: 'graph_check_freshness',
   blast: 'graph_blast',
+  enrich: 'graph_enrich',
 } as const
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES]
@@ -46,11 +47,36 @@ export interface ToolsConfig {
   timeoutMs: number
   /** Hard ceiling for one tool-rendered context (bytes). */
   maxInjectBytes: number
+  /** Local-LLM deep pass config (P2c #7); absent = graph_enrich not registered. */
+  deep?: DeepConfig
+}
+
+/**
+ * Local LLM enrichment (P2c #7, spec: «Локальный --deep через Ollama /
+ * DeepSeek local»). ONLY the explicit graph_enrich tool reads this — hooks
+ * never run the deep pass. The key comes exclusively from here (direct or a
+ * named env var); the ambient GRAFT_API_KEY is deliberately never read.
+ */
+export interface DeepConfig {
+  /** Register the graph_enrich tool (default false — don't burn CPU by accident). */
+  tool: boolean
+  /** GRAFT_MODEL — the local model id (e.g. an Ollama model). */
+  model: string
+  /** GRAFT_BASE_URL — the OpenAI-compatible local endpoint (default: Ollama). */
+  baseUrl: string
+  /** GRAFT_PROVIDER (the spec pins 'openai' for OpenAI-compatible endpoints). */
+  provider: string
+  /** GRAFT_API_KEY, direct. For a local endpoint a dummy token is fine. */
+  apiKey: string
+  /** Env-var name holding GRAFT_API_KEY (used when apiKey is empty). */
+  apiKeyEnv: string
 }
 
 export interface ToolsDeps {
   /** Spawn seam (tests substitute a fake runner). */
   runGraphJson: typeof runGraphJson
+  /** Raw-output spawn seam for the deep pass (the engine emits no JSON there). */
+  runGraphText?: typeof runGraph
   /** Process-cwd fallback when the session header has none. */
   processCwd?: () => string
   /** Cold-start notice for the npx fallback. */
@@ -980,6 +1006,118 @@ export function buildBlastTool(config: ToolsConfig, deps: ToolsDeps) {
 // assembly
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// graph_enrich (P2c #7 — explicit local LLM deep pass)
+// ---------------------------------------------------------------------------
+
+/** A local deep pass over a whole repo may take many minutes. */
+const DEEP_TIMEOUT_FLOOR_MS = 600_000
+const DEEP_SUMMARY_TAIL = 500
+const DEEP_ERR_TAIL = 300
+
+export function buildEnrichTool(config: ToolsConfig, deps: ToolsDeps) {
+  return defineTool({
+    name: TOOL_NAMES.enrich,
+    description:
+      'Run the engine LLM enrichment pass (graft build --deep) against the configured LOCAL model '
+      + '(OpenAI-compatible endpoint, e.g. Ollama): concept nodes + per-symbol summaries/crux. '
+      + 'Explicit on-demand tool — the hooks never run it, and the key comes only from the plugin '
+      + 'config (deep.apiKey / deep.apiKeyEnv), never from the ambient environment. '
+      + 'The engine content-hash cache makes re-runs cheap.',
+    parameters: {},
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          error: { type: 'string' },
+          hint: { type: 'string' },
+          summary: { type: 'string' },
+        },
+      },
+      render: (_args, value) => {
+        const record = asRecord(value) ?? {}
+        if (record.ok !== true) {
+          return [{ type: 'text', text: `[${record.error ?? 'DEEP_FAILED'}] ${typeof record.hint === 'string' ? record.hint : ''}`.trim() }]
+        }
+        return [{ type: 'text', text: typeof record.summary === 'string' && record.summary !== '' ? record.summary : 'Deep pass complete.' }]
+      },
+    },
+    timeoutMs: Math.max(config.timeoutMs, DEEP_TIMEOUT_FLOOR_MS),
+    async execute(_args, exec) {
+      const deep = config.deep
+      if (deep === undefined) {
+        return { ok: false, error: 'DEEP_DISABLED', hint: 'enable deep.tool in the plugin config' } as const
+      }
+      const model = deep.model.trim()
+      if (model === '') {
+        return { ok: false, error: 'DEEP_MODEL_MISSING', hint: 'set deep.model (e.g. a local Ollama model id)' } as const
+      }
+      const key = deep.apiKey.trim() !== ''
+        ? deep.apiKey.trim()
+        : deep.apiKeyEnv.trim() !== ''
+          ? (process.env[deep.apiKeyEnv.trim()] ?? '').trim()
+          : ''
+      if (key === '') {
+        return {
+          ok: false,
+          error: 'DEEP_KEY_MISSING',
+          hint: 'set deep.apiKey or deep.apiKeyEnv (the ambient GRAFT_API_KEY is never read)',
+        } as const
+      }
+      const anchor = anchorFromExec(exec, deps)
+      if (anchor.outsideGit || anchor.gitRoot === undefined) {
+        return { ok: false, error: 'NO_GIT_ROOT', hint: 'graph_enrich runs inside a git repository' } as const
+      }
+      const dir = anchor.graphRepoRoot ?? anchor.gitRoot
+      const timeoutMs = Math.max(config.timeoutMs, DEEP_TIMEOUT_FLOOR_MS)
+      try {
+        const result = await deps.runGraphText?.(
+          ['build', '--deep', dir],
+          {
+            cwd: dir,
+            timeoutMs,
+            graphPath: config.graphPath,
+            signal: exec.signal,
+            extraEnv: {
+              GRAFT_PROVIDER: deep.provider.trim() !== '' ? deep.provider.trim() : 'openai',
+              GRAFT_BASE_URL: deep.baseUrl.trim() !== '' ? deep.baseUrl.trim() : 'http://127.0.0.1:11434/v1',
+              GRAFT_MODEL: model,
+              GRAFT_API_KEY: key,
+            },
+          },
+        )
+        if (result === undefined) {
+          return { ok: false, error: 'DEEP_DISABLED', hint: 'runGraphText seam missing' } as const
+        }
+        if (result.code !== 0) {
+          const tail = result.stderr.trim().slice(-DEEP_ERR_TAIL)
+          return {
+            ok: false,
+            error: 'DEEP_FAILED',
+            hint: tail !== '' ? `graft build --deep exited ${result.code}: ${tail}` : `graft build --deep exited ${result.code}`,
+          } as const
+        }
+        const tail = result.stdout.trim().slice(-DEEP_SUMMARY_TAIL)
+        return {
+          ok: true,
+          summary: tail !== '' ? tail : 'Deep pass complete.',
+        } as const
+      } catch (error) {
+        if (error instanceof GraphError) {
+          return { ok: false, error: error.code, hint: error.hint ?? error.message } as const
+        }
+        return {
+          ok: false,
+          error: 'GRAPH_FAILED',
+          hint: error instanceof Error ? error.message : 'unknown error',
+        } as const
+      }
+    },
+  })
+}
+
 export interface GraphTools {
   findCode: ReturnType<typeof buildFindCodeTool>
   fileApi: ReturnType<typeof buildFileApiTool>
@@ -988,6 +1126,8 @@ export interface GraphTools {
   repoMap: ReturnType<typeof buildRepoMapTool>
   checkFreshness: ReturnType<typeof buildCheckFreshnessTool>
   blast: ReturnType<typeof buildBlastTool>
+  /** Present only when deep.tool is on (P2c #7). */
+  enrich?: ReturnType<typeof buildEnrichTool>
 }
 
 const BLAST_TOOL_CHANGED_CAP = 20
@@ -1002,5 +1142,6 @@ export function buildGraphTools(config: ToolsConfig, deps: ToolsDeps): GraphTool
     repoMap: buildRepoMapTool(config, deps),
     checkFreshness: buildCheckFreshnessTool(config, deps),
     blast: buildBlastTool(config, deps),
+    ...(config.deep?.tool === true ? { enrich: buildEnrichTool(config, deps) } : {}),
   }
 }

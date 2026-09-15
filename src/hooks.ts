@@ -71,8 +71,6 @@ export interface HooksConfig {
   graphPath: string
   /** Host edit-tool names marking the graph dirty (P1). */
   editToolNames: string[]
-  /** LLM pass flag; hooks never pass it to the CLI. */
-  deep: boolean
   /** Pre-step retrieval shape (P2a). */
   injectMode: 'pointers' | 'sourced' | 'map-only'
   /** One-time blind-search reminder (P2a). */

@@ -38,6 +38,8 @@ The `dsh plugin` forwarder links the package into the profile and appends `dsh-c
 | `graph_trace_calls` | Callers (`direction: in`) or callees (`out`) of a symbol; `depth > 1` walks transitively (blast radius). |
 | `graph_find_all` | Regex over indexed sources, ranked by coupling. |
 | `graph_check_freshness` | Drift report after edits; `stale` → run `graft build`. |
+| `graph_blast` | (P2c) Blast radius of a git diff: the symbols the changed lines touch + downstream dependents. No args = working tree vs HEAD; `base` ref (e.g. `origin/main`) diffs against its merge base. Free (no LLM). |
+| `graph_enrich` | (P2c, opt-in `deep.tool: true`) runs the engine LLM pass (`graft build --deep`) against the configured LOCAL model — concept nodes + per-symbol summaries/crux. Explicit tool only, never a hook. |
 
 Plus a lifecycle that mirrors the Claude-Code-style push cycle — the model
 gets orientation *pushed* into context, not just pull tools:
@@ -87,6 +89,7 @@ Defaults in the bundle overlay (`cordis.patch.yml`) enable the full stack; an em
 | `reinjectAfterCompaction` | `true` | (P2b) after the host compacts the session history, re-inject the short map once at the next pre-step — the session-start orientation survives compaction. |
 | `toolOrder` | `true` | (P2b) list the graph tools first in the assembled prompt (`system-prompt/assemble`); a no-op where the host does not expose that event. |
 | `blastOnResume` | `true` | (P2c) inject the short diff blast at session RESUME when the working tree is dirty ("what can this uncommitted work break"). |
+| `deep` | `false` / object | (P2c) local-LLM deep pass. Object form: `{ tool, model, baseUrl, provider, apiKey, apiKeyEnv }` — registers the `graph_enrich` tool (`tool: true`), pointed at an OpenAI-compatible LOCAL endpoint (default `http://127.0.0.1:11434/v1`, Ollama). The key comes only from `apiKey`/`apiKeyEnv` — the ambient `GRAFT_API_KEY` is never read. Legacy `deep: true/false` rows mean `tool` on/off. |
 
 User overlay (a patch replaces a row's **entire** config — restate every key you want to keep), e.g. from `cordis.yml.example`:
 
