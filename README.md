@@ -86,6 +86,7 @@ Defaults in the bundle overlay (`cordis.patch.yml`) enable the full stack; an em
 | `injectSubagentMap` | `true` | (P2b) inject the short repo map into subagents on `agent/created` (budget `maxInjectBytes / 2`), so an explore subagent in a graphed repo does not repeat the parent's cold-grep cycle. |
 | `reinjectAfterCompaction` | `true` | (P2b) after the host compacts the session history, re-inject the short map once at the next pre-step — the session-start orientation survives compaction. |
 | `toolOrder` | `true` | (P2b) list the graph tools first in the assembled prompt (`system-prompt/assemble`); a no-op where the host does not expose that event. |
+| `blastOnResume` | `true` | (P2c) inject the short diff blast at session RESUME when the working tree is dirty ("what can this uncommitted work break"). |
 
 User overlay (a patch replaces a row's **entire** config — restate every key you want to keep), e.g. from `cordis.yml.example`:
 

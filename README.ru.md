@@ -38,6 +38,7 @@ dsh plugin --profile web add /path/to/dsh-graph-context
 | `graph_trace_calls` | Калл-сайты (`direction: in`) или вызовы (`out`) символа; `depth > 1` — транзитивно (blast radius). |
 | `graph_find_all` | Регулярка по проиндексированным источникам, ранжирование по связанности. |
 | `graph_check_freshness` | Отчёт о дрейфе после правок; `stale` → выполнить `graft build`. |
+| `graph_blast` | Blast radius диффа (P2c): затронутые символы + downstream-зависимости git-diff (рабочее дерево vs HEAD, или `base` ref, напр. `origin/main`). Бесплатно (без LLM). |
 
 Плюс жизненный цикл, повторяющий push-цикл Claude-Code — ориентация *подталкивается* в контекст, а не только через pull-инструменты:
 
@@ -85,6 +86,7 @@ P2a уточняет push для локальных моделей, каждое
 | `injectSubagentMap` | `true` | (P2b) короткий repo-мап субагентам при `agent/created` (бюджет `maxInjectBytes / 2`), чтобы explore-субагент в репо с графом не повторял cold-grep родителя. |
 | `reinjectAfterCompaction` | `true` | (P2b) после компакции истории хостом одноразово reinject короткого мапа на следующем pre-step — ориентация session-start переживает компакцию. |
 | `toolOrder` | `true` | (P2b) graph-tools — первыми в собранном промпте (`system-prompt/assemble`); no-op, если хост не отдаёт событие. |
+| `blastOnResume` | `true` | (P2c) при RESUME сессии с грязным рабочим деревом — короткий diff-blast («что может сломать этот незакоммиченный код»). |
 
 Оверлей пользователя (патч заменяет **весь** конфиг строки — переписывайте все ключи, которые хотите сохранить), например из `cordis.yml.example`:
 

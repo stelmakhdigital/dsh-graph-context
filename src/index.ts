@@ -6,6 +6,10 @@
  * and `inject`, validates the row config against `Config` (Schemastery,
  * Standard Schema), and calls `apply(ctx, config)`.
  */
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
 import type { Context, SettingsService } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import z from '@deepseek-ai/schemastery'
@@ -106,6 +110,11 @@ export interface Config {
    * not expose that event.
    */
   toolOrder: boolean
+  /**
+   * Inject the short diff blast radius at session RESUME when the working
+   * tree is dirty (P2c, spec #3): "what can this uncommitted work break".
+   */
+  blastOnResume: boolean
 }
 
 /** Schemastery validation for {@link Config}; defaults live on the fields. */
@@ -132,6 +141,7 @@ export const Config: z<Config> = z.object({
   injectSubagentMap: z.boolean().default(true),
   reinjectAfterCompaction: z.boolean().default(true),
   toolOrder: z.boolean().default(true),
+  blastOnResume: z.boolean().default(true),
 })
 
 /**
@@ -167,6 +177,7 @@ export function normalizeConfig(raw: Partial<Config> | null | undefined): Config
     injectSubagentMap: source.injectSubagentMap ?? true,
     reinjectAfterCompaction: source.reinjectAfterCompaction ?? true,
     toolOrder: source.toolOrder ?? true,
+    blastOnResume: source.blastOnResume ?? true,
   }
   return out
 }
@@ -181,12 +192,30 @@ function positiveInt(value: number | undefined, fallback: number): number {
  * few lines — the FULL map is delivered by the session-start inject, and a
  * megabyte INDEX.md must never land in the system prompt.
  */
+/**
+ * Git-dirty probe for the resume blast (P2c, spec #3). Porcelain status is
+ * cheap and stable; any error (no git, no repo) reads as "not dirty" so the
+ * hook stays silent rather than failing open-loud.
+ */
+async function isGitDirty(repoRoot: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
+      cwd: repoRoot,
+      timeout: 5_000,
+      maxBuffer: 1024 * 1024,
+    })
+    return stdout.trim() !== ''
+  } catch {
+    return false
+  }
+}
+
 function systemPromptSection(config: Config): string {
   return [
     'Repo context graph (dsh-context-graph) is available for this workspace.',
     `Native tools: ${TOOL_NAMES.repoMap} (orientation), ${TOOL_NAMES.findCode} (question/symbol/error to file:line), `
       + `${TOOL_NAMES.fileApi} (file signatures without bodies), ${TOOL_NAMES.traceCalls} (callers/callees, depth for blast radius), `
-      + `${TOOL_NAMES.findAll} (ranked regex), ${TOOL_NAMES.checkFreshness} (drift).`,
+      + `${TOOL_NAMES.findAll} (ranked regex), ${TOOL_NAMES.checkFreshness} (drift), ${TOOL_NAMES.blast} (diff blast radius: what breaks if these lines change).`,
     'Before broad grep/read, call graph_repo_map (unfamiliar repo) or graph_find_code (a concrete question).',
     'After larger edits, call graph_check_freshness; on drift run `graft build` (structural, no LLM).',
     'Never read graft/.graph/wiring.json or the full graft/INDEX.md — the tools are the interface.',
@@ -215,6 +244,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     ctx.tools.register(tools.findAll)
     ctx.tools.register(tools.repoMap)
     ctx.tools.register(tools.checkFreshness)
+    ctx.tools.register(tools.blast)
   }
 
   // ---- system prompt pointer ------------------------------------------------
@@ -247,6 +277,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     injectSubagentMap: config.injectSubagentMap,
     reinjectAfterCompaction: config.reinjectAfterCompaction,
     toolOrder: config.toolOrder,
+    blastOnResume: config.blastOnResume,
   }
   registerHooks(ctx, hooksConfig, {
     state,
@@ -254,6 +285,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     releaseLock: (repoRoot) => releaseBuildLock(repoRoot),
     pluginName: name,
     logger,
+    gitDirty: isGitDirty,
     recordMetric: config.metrics
       ? (sessionId, kind) => { recordToolCall(sessionId, kind) }
       : undefined,
@@ -288,7 +320,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     logger.info(`dsh-context-graph: skill ready at ${skill.path}`)
   }
 
-  logger.info(`dsh-context-graph: loaded (tools=${config.tools}, sessionMap=${config.injectSessionMap}, autoBuild=${config.autoBuild}, promptHits=${config.injectPromptHits}/${config.injectMode}, blast=${config.injectBlastRadius}, autoSync=${config.autoSync}, nudge=${config.nudgeOnBlindSearch}, scope=${config.scopeFromLastEdit}, metrics=${config.metrics}, guardWiring=${config.guardWiringReads}, subagentMap=${config.injectSubagentMap}, compactionReinject=${config.reinjectAfterCompaction}, toolOrder=${config.toolOrder})`)
+  logger.info(`dsh-context-graph: loaded (tools=${config.tools}, sessionMap=${config.injectSessionMap}, autoBuild=${config.autoBuild}, promptHits=${config.injectPromptHits}/${config.injectMode}, blast=${config.injectBlastRadius}, autoSync=${config.autoSync}, nudge=${config.nudgeOnBlindSearch}, scope=${config.scopeFromLastEdit}, metrics=${config.metrics}, guardWiring=${config.guardWiringReads}, subagentMap=${config.injectSubagentMap}, compactionReinject=${config.reinjectAfterCompaction}, toolOrder=${config.toolOrder}, blastOnResume=${config.blastOnResume})`)
 }
 
 // Re-exported for consumers that compose the plugin programmatically (e.g.

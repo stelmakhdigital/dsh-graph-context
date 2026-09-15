@@ -231,6 +231,111 @@ export function renderBlastRadius(filePath: string, symbols: BlastSymbol[], maxB
   return truncateToBytes(`${header}\n${lines.join('\n')}`, maxBytes)
 }
 
+// ---------------------------------------------------------------------------
+// graft blast --format json (P2c #3): diff blast radius
+// ---------------------------------------------------------------------------
+
+export interface BlastSymbolRef {
+  id?: string
+  name?: string
+  kind?: string
+  path?: string
+  span?: string
+  relation?: string
+  depth?: number
+  wholeFile?: boolean
+}
+export interface BlastChangedFile {
+  path?: string
+  status?: string
+  ranges?: unknown
+  hunks?: unknown
+}
+export interface BlastPayload {
+  basis?: string
+  depth?: number
+  changed?: BlastChangedFile[]
+  unindexed?: string[]
+  deleted?: string[]
+  seeds?: BlastSymbolRef[]
+  impacted?: BlastSymbolRef[]
+  modules?: unknown[]
+  testModules?: unknown[]
+  areas?: unknown[]
+  reviewers?: unknown[]
+}
+
+const BLAST_SEED_CAP = 20
+const BLAST_IMPACTED_CAP = 40
+const BLAST_CHANGED_CAP = 20
+
+function blastSymbolLine(symbol: BlastSymbolRef, withRelation: boolean): string | undefined {
+  const name = typeof symbol.name === 'string' && symbol.name !== '' ? symbol.name : undefined
+  if (name === undefined) return undefined
+  const where = typeof symbol.path === 'string'
+    ? `${symbol.path}${typeof symbol.span === 'string' ? `:${symbol.span}` : ''}`
+    : undefined
+  const base = where !== undefined ? `${name} @ ${where}` : name
+  if (!withRelation) return base
+  const relation = typeof symbol.relation === 'string' && symbol.relation !== '' ? symbol.relation : 'depends'
+  const depth = typeof symbol.depth === 'number' ? symbol.depth : 1
+  return `${base} (${relation}, depth ${depth})`
+}
+
+/**
+ * Render a diff blast radius within a byte budget. Captures the model-facing
+ * question "what breaks if these lines change": the touched symbols (seeds)
+ * and their downstream dependents (impacted), grouped by hop depth.
+ */
+export function renderBlast(payload: BlastPayload, maxBytes: number): string {
+  const basis = typeof payload.basis === 'string' && payload.basis !== '' ? payload.basis : 'unknown basis'
+  const depth = typeof payload.depth === 'number' ? payload.depth : 2
+  const changed = Array.isArray(payload.changed) ? payload.changed : []
+  const seeds = Array.isArray(payload.seeds) ? payload.seeds : []
+  const impacted = Array.isArray(payload.impacted) ? payload.impacted : []
+  if (changed.length === 0 && seeds.length === 0 && impacted.length === 0) {
+    return `Blast radius (${basis}, depth ${depth}): No diff to analyze (clean working tree, no base ref given).`
+  }
+  const lines: string[] = [`Blast radius (${basis}, depth ${depth}):`]
+  if (changed.length > 0) {
+    lines.push('changed:')
+    for (const file of changed.slice(0, BLAST_CHANGED_CAP)) {
+      const path = typeof file?.path === 'string' && file.path !== '' ? file.path : '(unknown path)'
+      const status = typeof file?.status === 'string' && file.status !== '' ? ` (${file.status})` : ''
+      lines.push(`  - ${path}${status}`)
+    }
+  }
+  if (seeds.length > 0) {
+    lines.push('touched symbols:')
+    for (const symbol of seeds.slice(0, BLAST_SEED_CAP)) {
+      const line = blastSymbolLine(symbol, false)
+      if (line !== undefined) lines.push(`  - ${line}`)
+    }
+  }
+  if (impacted.length > 0) {
+    lines.push('impacted (downstream):')
+    for (const symbol of impacted.slice(0, BLAST_IMPACTED_CAP)) {
+      const line = blastSymbolLine(symbol, true)
+      if (line !== undefined) lines.push(`  - ${line}`)
+    }
+  } else {
+    lines.push('No impacted symbols detected beyond the changed lines.')
+  }
+  const unindexed = Array.isArray(payload.unindexed)
+    ? payload.unindexed.filter((p): p is string => typeof p === 'string' && p !== '')
+    : []
+  if (unindexed.length > 0) {
+    lines.push(`unindexed changed files (no graph coverage): ${unindexed.slice(0, 10).join(', ')}`)
+  }
+  const deleted = Array.isArray(payload.deleted)
+    ? payload.deleted.filter((p): p is string => typeof p === 'string' && p !== '')
+    : []
+  if (deleted.length > 0) {
+    lines.push(`deleted: ${deleted.slice(0, 10).join(', ')}`)
+  }
+  return truncateToBytes(lines.join('\n'), maxBytes)
+}
+
 /** Skeleton payload (graft skeleton --json): signatures without bodies. */
 export interface SkeletonEntry {
   name?: string

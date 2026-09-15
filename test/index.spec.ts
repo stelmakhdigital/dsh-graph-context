@@ -86,16 +86,16 @@ describe('index.ts — plugin contract', () => {
     expect(inject).toEqual(['tools', 'systemPrompt'])
   })
 
-  it('Config is a schemastery object with all 18 documented fields', () => {
+  it('Config is a schemastery object with all documented fields', () => {
     expect(typeof Config).toBe('object')
     const dict = (Config as unknown as { meta: { dict: Record<string, unknown> } }).meta.dict
     const keys = Object.keys(dict).sort()
     expect(keys).toEqual([
-      'autoBuild', 'autoSync', 'buildTimeoutMs', 'deep', 'editToolNames', 'graphPath',
-      'guardWiringReads', 'injectBlastRadius', 'injectMode', 'injectPromptHits',
-      'injectSessionMap', 'injectSubagentMap', 'maxInjectBytes', 'metrics',
-      'nudgeOnBlindSearch', 'promptMinChars', 'reinjectAfterCompaction',
-      'scopeFromLastEdit', 'timeoutMs', 'toolOrder', 'tools',
+      'autoBuild', 'autoSync', 'blastOnResume', 'buildTimeoutMs', 'deep',
+      'editToolNames', 'graphPath', 'guardWiringReads', 'injectBlastRadius',
+      'injectMode', 'injectPromptHits', 'injectSessionMap', 'injectSubagentMap',
+      'maxInjectBytes', 'metrics', 'nudgeOnBlindSearch', 'promptMinChars',
+      'reinjectAfterCompaction', 'scopeFromLastEdit', 'timeoutMs', 'toolOrder', 'tools',
     ].sort())
   })
 
@@ -122,9 +122,9 @@ describe('index.ts — plugin contract', () => {
     expect(normalizeConfig({ injectMode: 'map-only' }).injectMode).toBe('map-only')
   })
 
-  it('apply() registers the six tools with stable names', () => {
+  it('apply() registers the seven tools with stable names', () => {
     const { registered } = captureApply({})
-    expect(registered).toHaveLength(6)
+    expect(registered).toHaveLength(7)
     const names = registered.map((tool) => (tool as { name: string }).name)
     expect([...names].sort()).toEqual(Object.values(TOOL_NAMES).sort())
   })

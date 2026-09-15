@@ -4,6 +4,7 @@ import {
   formatPointer,
   parsePointer,
   renderAsk,
+  renderBlast,
   renderBlastRadius,
   renderCheck,
   renderError,
@@ -310,5 +311,67 @@ describe('format.ts — renderNudge (P2a, spec #2)', () => {
     expect(a).toContain('graph_find_code')
     expect(a).toContain('graph_repo_map')
     expect(a).not.toMatch(/forbidden|not allowed|refused/i) // a reminder, not a block
+  })
+})
+
+// ---------------------------------------------------------------------------
+// renderBlast (P2c #3) — graft blast --format json
+// ---------------------------------------------------------------------------
+
+const BLAST_JSON = {
+  basis: 'working tree vs HEAD',
+  depth: 2,
+  changed: [{ path: 'src/a.ts', status: 'modified', ranges: [{ start: 1, end: 1 }], hunks: [] }],
+  unindexed: [],
+  deleted: [],
+  seeds: [{ id: 'src/a.ts#alpha', name: 'alpha', kind: 'function', path: 'src/a.ts', span: 'L1-L1', wholeFile: false }],
+  impacted: [
+    { id: 'src/a.ts#beta', name: 'beta', kind: 'function', path: 'src/a.ts', span: 'L2-L2', relation: 'calls', depth: 1 },
+    { id: 'src/b.ts#gamma', name: 'gamma', kind: 'function', path: 'src/b.ts', span: 'L2-L2', relation: 'calls', depth: 2 },
+  ],
+  modules: [],
+  testModules: [],
+  areas: [],
+  reviewers: [],
+}
+
+describe('format.ts — renderBlast (P2c #3)', () => {
+  it('renders basis header, changed files, seeds and impacted by depth', () => {
+    const text = renderBlast(BLAST_JSON, 4096)
+    expect(text).toContain('Blast radius (working tree vs HEAD, depth 2)')
+    expect(text).toContain('src/a.ts (modified)')
+    expect(text).toContain('alpha @ src/a.ts:L1-L1')
+    expect(text).toContain('beta @ src/a.ts:L2-L2')
+    expect(text).toContain('gamma @ src/b.ts:L2-L2')
+    // impacted lines carry the relation and depth
+    expect(text).toContain('(calls, depth 1)')
+    expect(text).toContain('(calls, depth 2)')
+  })
+
+  it('empty impacted renders the no-impact line', () => {
+    const text = renderBlast({ ...BLAST_JSON, seeds: [], impacted: [] }, 4096)
+    expect(text).toContain('No impacted symbols')
+  })
+
+  it('no changed lines and no seeds renders the empty-diff line', () => {
+    const text = renderBlast({ ...BLAST_JSON, changed: [], seeds: [], impacted: [] }, 4096)
+    expect(text).toContain('No diff to analyze')
+  })
+
+  it('respects the byte budget and marks truncation', () => {
+    const many = {
+      ...BLAST_JSON,
+      impacted: Array.from({ length: 80 }, (_, i) => ({
+        id: `src/f${i}.ts#s${i}`, name: `s${i}`, kind: 'function', path: `src/f${i}.ts`, span: 'L1-L1', relation: 'calls', depth: 1,
+      })),
+    }
+    const text = renderBlast(many, 300)
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(400)
+    expect(text).toContain('truncated')
+  })
+
+  it('lists unindexed changed files', () => {
+    const text = renderBlast({ ...BLAST_JSON, unindexed: ['docs/x.md'] }, 4096)
+    expect(text).toContain('docs/x.md')
   })
 })

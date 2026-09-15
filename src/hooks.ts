@@ -32,12 +32,14 @@ import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionRes
 import { GraphError, runGraphJson, spawnDetachedBuild } from './cli.ts'
 import { TOOL_NAMES } from './tools.ts'
 import {
+  renderBlast,
   renderBlastRadius,
   renderMap,
   renderNudge,
   renderPromptHits,
   renderPromptHitsSourced,
   type AskPayload,
+  type BlastPayload,
   type CallsPayload,
   type MapPayload,
   type SkeletonPayload,
@@ -87,6 +89,8 @@ export interface HooksConfig {
   reinjectAfterCompaction: boolean
   /** List graph tools first in the assembled prompt (P2b, spec #11). */
   toolOrder: boolean
+  /** Short diff blast at session resume on dirty git (P2c, spec #3). */
+  blastOnResume: boolean
 }
 
 export interface HooksDeps {
@@ -104,6 +108,11 @@ export interface HooksDeps {
     error(message: string): void
   }
   processCwd?: () => string
+  /**
+   * Git-dirty seam (P2c, spec #3): is the working tree dirty at this root?
+   * Undefined → the resume-blast hook stays silent (fail-open).
+   */
+  gitDirty?: (repoRoot: string) => Promise<boolean>
   /**
    * Metrics sink (P2a, spec #16): bump one local counter. Undefined when
    * `metrics` is off; the hooks never write files themselves, so tests can
@@ -246,6 +255,31 @@ export async function handleSessionStart(
   // agent/created, delivered at their first pre-step) — the full-budget
   // session-start map would duplicate it. Root agents keep the full map.
   if (config.injectSubagentMap && isSubagentAgent(agent)) return
+
+  // Resume on a dirty working tree: the short diff blast answers "what can
+  // this uncommitted work break" before the model re-orients (P2c, spec #3).
+  // Independent of the map below; fail-open at every step.
+  if (config.blastOnResume && source === 'resume' && deps.gitDirty !== undefined) {
+    const blastRoot = anchor.graphRepoRoot ?? root
+    try {
+      const dirty = await deps.gitDirty(root)
+      if (dirty) {
+        const { json, code } = await runGraph<BlastPayload>(['blast', '--depth', '2', '--format', 'json', blastRoot], {
+          cwd: blastRoot,
+          timeoutMs: config.timeoutMs,
+          graphPath: config.graphPath,
+        })
+        if (code !== 0) {
+          deps.logger.warn(`dsh-context-graph: graft blast exited ${code}; skipping resume blast`)
+        } else {
+          const rendered = renderBlast(json, Math.floor(config.maxInjectBytes / 2))
+          if (rendered !== '') injectSafe(agent, rendered, deps)
+        }
+      }
+    } catch (error) {
+      deps.logger.warn(`dsh-context-graph: resume blast skipped (${errorMessage(error)})`)
+    }
+  }
 
   // Graph exists: pull the map, render within budget, inject for next request.
   const dir = anchor.graphRepoRoot ?? root

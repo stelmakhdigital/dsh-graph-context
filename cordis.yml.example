@@ -32,3 +32,4 @@
         reinjectAfterCompaction: true
         # list the graph tools first in the assembled prompt (P2b)
         toolOrder: true
+        blastOnResume: true

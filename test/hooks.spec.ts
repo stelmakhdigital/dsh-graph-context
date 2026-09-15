@@ -9,6 +9,20 @@ import { registerHooks, reorderToolsForGraph, type HooksConfig } from '../src/ho
 import { LOCK_FILE_NAME, SessionStateStore } from '../src/session-state.ts'
 import { makeGitRepo, makeTmpRoot, removeTmpRoot } from './fixtures.ts'
 
+const BLAST_JSON_HOOKS = {
+  basis: 'working tree vs HEAD',
+  depth: 2,
+  changed: [{ path: 'src/a.ts', status: 'modified', ranges: [{ start: 1, end: 1 }], hunks: [] }],
+  unindexed: [],
+  deleted: [],
+  seeds: [{ id: 'src/a.ts#alpha', name: 'alpha', kind: 'function', path: 'src/a.ts', span: 'L1-L1', wholeFile: false }],
+  impacted: [
+    { id: 'src/a.ts#beta', name: 'beta', kind: 'function', path: 'src/a.ts', span: 'L2-L2', relation: 'calls', depth: 1 },
+    { id: 'src/b.ts#gamma', name: 'gamma', kind: 'function', path: 'src/b.ts', span: 'L2-L2', relation: 'calls', depth: 2 },
+  ],
+  modules: [], testModules: [], areas: [], reviewers: [],
+}
+
 const MAP_JSON = {
   totals: { files: 3, symbols: 5, edges: 10, languages: ['typescript'] },
   dirs: [{ path: 'src', files: 1, symbols: 3, hubs: [{ name: 'authenticate' }] }],
@@ -37,6 +51,7 @@ const CONFIG: HooksConfig = {
   injectSubagentMap: true,
   reinjectAfterCompaction: true,
   toolOrder: true,
+  blastOnResume: true,
 }
 
 interface Injected {
@@ -1735,5 +1750,116 @@ describe('hooks.ts — toolOrder (P2b, spec #11)', () => {
     const bare = { sections: [], contexts: [], variables: {} }
     const result = await listener?.(bare as never, {}, async () => bare)
     expect(result).toBe(bare)
+  })
+})
+
+describe('hooks.ts — session-start resume blast (P2c #3)', () => {
+  let root: string
+  let repo: string
+
+  afterAll(() => removeTmpRoot(root))
+
+  function setupBlast(gitDirty: boolean, blastOutcome?: { code?: number }) {
+    const { ctx, listeners } = makeCtx()
+    const routes: Array<{ match: (a: string[]) => boolean; json?: unknown; code?: number }> = [
+      { match: (a) => a[0] === 'blast', json: BLAST_JSON_HOOKS, code: blastOutcome?.code },
+      { match: (a) => a[0] === 'map', json: MAP_JSON },
+    ]
+    const routed = makeRoutedRunner(routes)
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    registerHooks(ctx, CONFIG, {
+      state: new SessionStateStore(),
+      spawnBuild: makeBuildFake().spawnBuild,
+      pluginName: 'dsh-context-graph',
+      logger,
+      processCwd: () => repo,
+      gitDirty: async () => gitDirty,
+    }, routed.runner)
+    return { listeners, routed, logger }
+  }
+
+  it('resume + dirty git: injects the short blast (before the map)', async () => {
+    root = makeTmpRoot('dsh-cg-p2c-resumeblast-dirty-')
+    repo = makeGraphRepo(root)
+    const { listeners, routed } = setupBlast(true)
+    const agent = makeAgent(join(repo, 'src'))
+    await fireSessionStart(listeners, agent, 'resume')
+    const blastCalls = routed.calls.filter((c) => c.args[0] === 'blast')
+    expect(blastCalls).toHaveLength(1)
+    expect(blastCalls[0]!.args).toEqual(['blast', '--depth', '2', '--format', 'json', repo])
+    const injected = (agent.inject as unknown as { mock: { calls: unknown[][] } }).mock.calls
+    const firstText = injected[0]?.[0] as { content: Array<{ text?: string }> }
+    expect(firstText.content[0]?.text ?? '').toContain('Blast radius (working tree vs HEAD, depth 2)')
+  })
+
+  it('resume + clean git: no blast call, map still injected', async () => {
+    root = makeTmpRoot('dsh-cg-p2c-resumeblast-clean-')
+    repo = makeGraphRepo(root)
+    const { listeners, routed } = setupBlast(false)
+    const agent = makeAgent(join(repo, 'src'))
+    await fireSessionStart(listeners, agent, 'resume')
+    expect(routed.calls.filter((c) => c.args[0] === 'blast')).toHaveLength(0)
+    expect(injectedText(agent)).toContain('repo map — 3 files')
+  })
+
+  it('startup + dirty: no blast (resume-only)', async () => {
+    root = makeTmpRoot('dsh-cg-p2c-resumeblast-startup-')
+    repo = makeGraphRepo(root)
+    const { listeners, routed } = setupBlast(true)
+    const agent = makeAgent(join(repo, 'src'))
+    await fireSessionStart(listeners, agent, 'startup')
+    expect(routed.calls.filter((c) => c.args[0] === 'blast')).toHaveLength(0)
+  })
+
+  it('blastOnResume=false: no blast even on resume+dirty', async () => {
+    root = makeTmpRoot('dsh-cg-p2c-resumeblast-off-')
+    repo = makeGraphRepo(root)
+    const { ctx, listeners } = makeCtx()
+    const routed = makeRoutedRunner([
+      { match: (a: string[]) => a[0] === 'blast', json: BLAST_JSON_HOOKS },
+      { match: (a: string[]) => a[0] === 'map', json: MAP_JSON },
+    ])
+    registerHooks(ctx, { ...CONFIG, blastOnResume: false }, {
+      state: new SessionStateStore(),
+      spawnBuild: makeBuildFake().spawnBuild,
+      pluginName: 'dsh-context-graph',
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      processCwd: () => repo,
+      gitDirty: async () => true,
+    }, routed.runner)
+    const agent = makeAgent(join(repo, 'src'))
+    await fireSessionStart(listeners, agent, 'resume')
+    expect(routed.calls.filter((c) => c.args[0] === 'blast')).toHaveLength(0)
+  })
+
+  it('blast CLI failure: fail-open, map still injected, warn logged', async () => {
+    root = makeTmpRoot('dsh-cg-p2c-resumeblast-fail-')
+    repo = makeGraphRepo(root)
+    const { listeners, routed, logger } = setupBlast(true, { code: 1 })
+    const agent = makeAgent(join(repo, 'src'))
+    await fireSessionStart(listeners, agent, 'resume')
+    expect(routed.calls.filter((c) => c.args[0] === 'blast')).toHaveLength(1)
+    expect(injectedText(agent)).toContain('repo map — 3 files')
+    expect(logger.warn).toHaveBeenCalled()
+  })
+
+  it('no gitDirty seam: skip silently (undefined dep)', async () => {
+    root = makeTmpRoot('dsh-cg-p2c-resumeblast-noseam-')
+    repo = makeGraphRepo(root)
+    const { ctx, listeners } = makeCtx()
+    const routed = makeRoutedRunner([
+      { match: (a: string[]) => a[0] === 'blast', json: BLAST_JSON_HOOKS },
+      { match: (a: string[]) => a[0] === 'map', json: MAP_JSON },
+    ])
+    registerHooks(ctx, CONFIG, {
+      state: new SessionStateStore(),
+      spawnBuild: makeBuildFake().spawnBuild,
+      pluginName: 'dsh-context-graph',
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      processCwd: () => repo,
+    }, routed.runner)
+    const agent = makeAgent(join(repo, 'src'))
+    await fireSessionStart(listeners, agent, 'resume')
+    expect(routed.calls.filter((c) => c.args[0] === 'blast')).toHaveLength(0)
   })
 })

@@ -1,5 +1,5 @@
 /**
- * The six model-facing graph tools.
+ * The model-facing graph tools.
  *
  * Names use the project's own `graph_*` vocabulary (owner decision
  * 2026-09-13: the token "graft" is forbidden in our naming) so AGENTS.md,
@@ -14,8 +14,10 @@ import { GraphError, runGraphJson } from './cli.ts'
 import {
   formatPointer,
   parsePointer,
+  renderBlast,
   renderCheck,
   renderMap,
+  type BlastPayload,
   type CheckPayload,
   type MapDir,
   type MapHotspot,
@@ -31,6 +33,7 @@ export const TOOL_NAMES = {
   findAll: 'graph_find_all',
   repoMap: 'graph_repo_map',
   checkFreshness: 'graph_check_freshness',
+  blast: 'graph_blast',
 } as const
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES]
@@ -830,6 +833,150 @@ export function buildCheckFreshnessTool(config: ToolsConfig, deps: ToolsDeps) {
 }
 
 // ---------------------------------------------------------------------------
+// graph_blast (P2c #3)
+// ---------------------------------------------------------------------------
+
+interface BlastSymbolValue {
+  name: string
+  path: string
+  span?: string
+  relation?: string
+  depth?: number
+}
+
+const blastSymbolSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    name: { type: 'string', required: true },
+    path: { type: 'string', required: true },
+    span: { type: 'string' },
+    relation: { type: 'string' },
+    depth: { type: 'integer' },
+  },
+} as const
+
+const blastChangedSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    path: { type: 'string', required: true },
+    status: { type: 'string' },
+  },
+} as const
+
+/**
+ * Diff blast radius: which symbols the changed lines touch (seeds) and which
+ * depend on them (impacted). $0, no LLM — structural graph over incoming
+ * edges from the diff hunks.
+ */
+export function buildBlastTool(config: ToolsConfig, deps: ToolsDeps) {
+  return defineTool({
+    name: TOOL_NAMES.blast,
+    description:
+      'Blast radius of a git diff (working tree vs HEAD, or against a base ref via --base): '
+      + 'the symbols the changed lines touch and the downstream dependents that may break. '
+      + 'Zero-cost (no LLM). Use before refactoring or to answer "what breaks if I change X".',
+    parameters: {
+      base: { type: 'string', description: 'Base ref to diff against its merge base with HEAD (e.g. "origin/main"). Default: working tree vs HEAD.' },
+      depth: { type: 'integer', description: 'Hops to walk over incoming edges, 1-8 (default 2).' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          error: { type: 'string' },
+          hint: { type: 'string' },
+          basis: { type: 'string' },
+          depth: { type: 'integer' },
+          changed: { type: 'array', items: blastChangedSchema },
+          seeds: { type: 'array', items: blastSymbolSchema },
+          impacted: { type: 'array', items: blastSymbolSchema },
+          unindexed: { type: 'array', items: { type: 'string' } },
+          blastText: { type: 'string' },
+        },
+      },
+      render: (_args, value) => {
+        const record = asRecord(value) ?? {}
+        if (record.ok !== true) {
+          return [{ type: 'text', text: `[${record.error ?? 'GRAPH_FAILED'}] ${typeof record.hint === 'string' ? record.hint : ''}`.trim() }]
+        }
+        const blastText = typeof record.blastText === 'string' && record.blastText !== ''
+          ? record.blastText
+          : 'No diff to analyze.'
+        return [{ type: 'text', text: blastText }]
+      },
+    },
+    async execute(args, exec) {
+      const anchor = anchorFromExec(exec, deps)
+      const base = typeof args.base === 'string' && args.base.trim() !== '' ? args.base.trim() : undefined
+      const depth = clampInt(args.depth, 1, 8, 2)
+      const result = await withGraph(anchor, config, deps, exec.signal,
+        (dir) => [
+          'blast',
+          ...(base !== undefined ? ['--base', base] : []),
+          '--depth', String(depth),
+          '--format', 'json', dir,
+        ],
+        (json, code) => {
+          if (code !== 0) {
+            return { ok: false, error: 'BLAST_FAILED', hint: `graft blast exited ${code}` } as const
+          }
+          const payload = json as BlastPayload
+          const changed = (Array.isArray(payload.changed) ? payload.changed : [])
+            .filter((f): f is { path: string; status?: string } =>
+              typeof f?.path === 'string' && f.path !== '')
+            .slice(0, BLAST_TOOL_CHANGED_CAP)
+            .map((f) => ({
+              path: f.path,
+              ...(typeof f.status === 'string' ? { status: f.status } : {}),
+            }))
+          const seeds: BlastSymbolValue[] = []
+          for (const symbol of Array.isArray(payload.seeds) ? payload.seeds : []) {
+            if (typeof symbol?.name !== 'string' || symbol.name === '' || typeof symbol?.path !== 'string') continue
+            seeds.push({
+              name: symbol.name,
+              path: symbol.path,
+              ...(typeof symbol.span === 'string' ? { span: symbol.span } : {}),
+            })
+            if (seeds.length >= 20) break
+          }
+          const impacted: BlastSymbolValue[] = []
+          for (const symbol of Array.isArray(payload.impacted) ? payload.impacted : []) {
+            if (typeof symbol?.name !== 'string' || symbol.name === '' || typeof symbol?.path !== 'string') continue
+            impacted.push({
+              name: symbol.name,
+              path: symbol.path,
+              ...(typeof symbol.span === 'string' ? { span: symbol.span } : {}),
+              ...(typeof symbol.relation === 'string' ? { relation: symbol.relation } : {}),
+              ...(typeof symbol.depth === 'number' ? { depth: symbol.depth } : {}),
+            })
+            if (impacted.length >= 40) break
+          }
+          const unindexed = Array.isArray(payload.unindexed)
+            ? payload.unindexed.filter((p): p is string => typeof p === 'string' && p !== '').slice(0, 10)
+            : []
+          const blastText = renderBlast(payload, config.maxInjectBytes)
+          return {
+            ok: true,
+            ...(typeof payload.basis === 'string' ? { basis: payload.basis } : {}),
+            depth,
+            changed,
+            seeds,
+            impacted,
+            unindexed,
+            blastText,
+          }
+        })
+      return result
+    },
+    timeoutMs: config.timeoutMs + 45_000,
+  })
+}
+
+// ---------------------------------------------------------------------------
 // assembly
 // ---------------------------------------------------------------------------
 
@@ -840,9 +987,12 @@ export interface GraphTools {
   findAll: ReturnType<typeof buildFindAllTool>
   repoMap: ReturnType<typeof buildRepoMapTool>
   checkFreshness: ReturnType<typeof buildCheckFreshnessTool>
+  blast: ReturnType<typeof buildBlastTool>
 }
 
-/** Build all six tools with one config/deps pair (registration is separate). */
+const BLAST_TOOL_CHANGED_CAP = 20
+
+/** Build all tools with one config/deps pair (registration is separate). */
 export function buildGraphTools(config: ToolsConfig, deps: ToolsDeps): GraphTools {
   return {
     findCode: buildFindCodeTool(config, deps),
@@ -851,5 +1001,6 @@ export function buildGraphTools(config: ToolsConfig, deps: ToolsDeps): GraphTool
     findAll: buildFindAllTool(config, deps),
     repoMap: buildRepoMapTool(config, deps),
     checkFreshness: buildCheckFreshnessTool(config, deps),
+    blast: buildBlastTool(config, deps),
   }
 }

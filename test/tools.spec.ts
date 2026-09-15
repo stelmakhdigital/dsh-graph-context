@@ -174,7 +174,7 @@ afterAll(() => removeTmpRoot(REPO))
 // ---------------------------------------------------------------------------
 
 describe('tools.ts — stable contract', () => {
-  it('exposes exactly the six graph_* names (snake_case, ≤ 64)', () => {
+  it('exposes exactly the seven graph_* names (snake_case, ≤ 64)', () => {
     expect(Object.values(TOOL_NAMES)).toEqual([
       'graph_find_code',
       'graph_file_api',
@@ -182,6 +182,7 @@ describe('tools.ts — stable contract', () => {
       'graph_find_all',
       'graph_repo_map',
       'graph_check_freshness',
+      'graph_blast',
     ])
     for (const toolName of Object.values(TOOL_NAMES)) {
       expect(toolName).toMatch(/^[a-z][a-z0-9_]{0,63}$/)
@@ -376,6 +377,86 @@ describe('tools.ts — graph_check_freshness', () => {
     const value = asValue<FreshnessValue>(await tools.checkFreshness.execute({}, fakeExec(REPO_SRC)))
     expect(value.fresh).toBe(true)
     expect(renderedText(tools.checkFreshness, {}, value)).toContain('Fresh')
+  })
+})
+
+const BLAST_JSON = {
+  basis: 'working tree vs HEAD',
+  depth: 2,
+  changed: [{ path: 'src/a.ts', status: 'modified', ranges: [{ start: 1, end: 1 }], hunks: [] }],
+  unindexed: [],
+  deleted: [],
+  seeds: [{ id: 'src/a.ts#alpha', name: 'alpha', kind: 'function', path: 'src/a.ts', span: 'L1-L1', wholeFile: false }],
+  impacted: [
+    { id: 'src/a.ts#beta', name: 'beta', kind: 'function', path: 'src/a.ts', span: 'L2-L2', relation: 'calls', depth: 1 },
+    { id: 'src/b.ts#gamma', name: 'gamma', kind: 'function', path: 'src/b.ts', span: 'L2-L2', relation: 'calls', depth: 2 },
+  ],
+  modules: [],
+  testModules: [],
+  areas: [],
+  reviewers: [],
+}
+
+interface BlastValue {
+  ok: boolean
+  error?: string
+  hint?: string
+  basis?: string
+  depth?: number
+  changed?: Array<{ path: string; status?: string }>
+  seeds?: Array<{ name: string; path: string; span?: string }>
+  impacted?: Array<{ name: string; path: string; span?: string; relation?: string; depth?: number }>
+  unindexed?: string[]
+  blastText?: string
+}
+
+describe('tools.ts — graph_blast (P2c #3)', () => {
+  it('passes --base/--depth to the CLI and normalizes seeds/impacted', async () => {
+    const fake = fakeRunner(() => ({ json: BLAST_JSON }))
+    const tools = makeTools(fake)
+    const value = asValue<BlastValue>(await tools.blast.execute({ base: 'origin/main', depth: 3 }, fakeExec(REPO_SRC)))
+    expect(value.ok).toBe(true)
+    expect(value.basis).toBe('working tree vs HEAD')
+    expect(value.depth).toBe(3)
+    expect(value.changed?.[0]?.path).toBe('src/a.ts')
+    expect(value.seeds?.[0]?.name).toBe('alpha')
+    expect(value.impacted).toHaveLength(2)
+    expect(fake.calls[0]!.args).toEqual(['blast', '--base', 'origin/main', '--depth', '3', '--format', 'json', REPO])
+  })
+
+  it('defaults: no --base flag, depth 2', async () => {
+    const fake = fakeRunner(() => ({ json: BLAST_JSON }))
+    const tools = makeTools(fake)
+    await tools.blast.execute({}, fakeExec(REPO_SRC))
+    expect(fake.calls[0]!.args).toEqual(['blast', '--depth', '2', '--format', 'json', REPO])
+  })
+
+  it('render returns the blast text with the impacted list', async () => {
+    const fake = fakeRunner(() => ({ json: BLAST_JSON }))
+    const tools = makeTools(fake)
+    const value = await tools.blast.execute({}, fakeExec(REPO_SRC))
+    const text = renderedText(tools.blast, {}, value)
+    expect(text).toContain('Blast radius (working tree vs HEAD, depth 2)')
+    expect(text).toContain('beta @ src/a.ts:L2-L2')
+  })
+
+  it('CLI exit 1 is a failure value (fail-open)', async () => {
+    const fake = fakeRunner(() => ({ json: {}, code: 1 }))
+    const tools = makeTools(fake)
+    const value = asValue<ToolFailure>(await tools.blast.execute({}, fakeExec(REPO_SRC)))
+    expect(value.ok).toBe(false)
+    expect(value.error).toBe('BLAST_FAILED')
+  })
+
+  it('GRAPH_MISSING when the repo has no graph', async () => {
+    const bareRoot = makeTmpRoot('dsh-cg-tools-blast-bare-')
+    const bareRepo = makeGitRepo(bareRoot)
+    const fake = fakeRunner(() => ({ json: BLAST_JSON }))
+    const tools = makeTools(fake)
+    const value = asValue<ToolFailure>(await tools.blast.execute({}, fakeExec(join(bareRepo, 'src'))))
+    expect(value).toMatchObject({ ok: false, error: 'GRAPH_MISSING' })
+    expect(fake.calls).toHaveLength(0)
+    removeTmpRoot(bareRepo)
   })
 })
 
