@@ -158,10 +158,15 @@ return [hits, blast].map(v => v.blastText ?? JSON.stringify(v).slice(0, 400)).jo
 
 ## Дорожная карта
 
-P0 (выпущено): пакет + оверлей + 6 инструментов + секция системного промпта + session-start map inject + autoBuild + fail-open.
-P1 (выпущено, v0.2.0): retrieval хитов на промпты (`agent/pre-step`), blast radius после правок (`tools/post-execute`), autoSync на остановке хода, dirty-трекинг, установка user-level скилла, settings-секция (если хост монтирует провайдера).
-P2a (выпущено, v0.3.0): `injectMode` (sourced/pointers/map-only), nudge при слепом поиске, mono-repo scope по последней правке, локальные метрики, wiring-охрана, тест инварианта приватности.
-P2b/P2c (каждое — свой флаг): хост-поверхности (compaction re-inject, subagent-карта, порядок инструментов), затем тяжёлые фичи (`graph_blast`, local `--deep` enrich, watcher, Code Mode).
+Все запланированные фазы выпущены (v1.0.0, 2026-09-15):
+
+- **P0**: пакет + оверлей + инструменты + секция системного промпта + session-start map inject + autoBuild + fail-open.
+- **P1 (v0.2.0)**: retrieval хитов на промпты, blast radius после правок, autoSync на остановке хода, dirty-трекинг, user-level скилл, settings-секция.
+- **P2a (v0.3.0)**: `injectMode`, nudge при слепом поиске, mono-repo scope по последней правке, локальные метрики, wiring-охрана, инвариант приватности.
+- **P2b (v0.5.2)**: subagent-карта, compaction re-inject, порядок инструментов (каждое — свой флаг).
+- **P2c (v0.8.0)**: `graph_blast` + resume-blast (v0.6.0), готовность к Code Mode (v0.6.1), локальный LLM `graph_enrich` (v0.7.0), файл-вотчер (v0.8.0).
+
+Покрытие: 90% строк `src/` (240 unit-тестов + opt-in e2e против реального CLI, `pnpm coverage`). Проект — в режиме сопровождения; лог решений и Won't-список — в `roadmap.md`.
 
 Гейты и критерии приёмки — в `roadmap.md`.
 

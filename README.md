@@ -159,10 +159,15 @@ Each tool's parameter and output schemas are projected into the SDK stubs, so `r
 
 ## Roadmap
 
-P0 (shipped): package + overlay + 6 tools + system-prompt section + session-start map inject + autoBuild + fail-open.
-P1 (shipped, v0.2.0): prompt-hits retrieval (`agent/pre-step`), blast radius after edits (`tools/post-execute`), turn-stop autoSync, dirty tracking, user-level skill install, settings section (when the host mounts the provider).
-P2a (shipped, v0.3.0): `injectMode` (sourced/pointers/map-only), blind-search nudge, monorepo scope-from-last-edit, local metrics, wiring read guard, privacy-invariant test.
-P2b/P2c (each behind its own flag): host surfaces (compaction re-inject, subagent map, tool order), then heavy features (`graph_blast`, local `--deep` enrich, watcher, Code Mode).
+All planned phases shipped (v1.0.0, 2026-09-15):
+
+- **P0**: package + overlay + tools + system-prompt section + session-start map inject + autoBuild + fail-open.
+- **P1 (v0.2.0)**: prompt-hits retrieval, blast radius after edits, turn-stop autoSync, dirty tracking, user-level skill, settings section.
+- **P2a (v0.3.0)**: `injectMode`, blind-search nudge, monorepo scope-from-last-edit, local metrics, wiring read guard, privacy invariant.
+- **P2b (v0.5.2)**: subagent map, compaction re-inject, tool order (each behind its own flag).
+- **P2c (v0.8.0)**: `graph_blast` + resume blast (v0.6.0), Code Mode readiness (v0.6.1), local LLM `graph_enrich` (v0.7.0), file watcher (v0.8.0).
+
+Coverage: 90% lines over `src/` (240 unit tests + opt-in e2e against the real CLI, `pnpm coverage`). The project is in maintenance mode; see `roadmap.md` for the decision log and the Won't list.
 
 See `roadmap.md` for gates and acceptance criteria.
 
