@@ -127,6 +127,19 @@ No git repo → the plugin stays completely silent (no tool errors, no injects, 
 
 Do **not** register the engine's MCP server alongside this plugin: the surfaces would overlap (the native `graph_*` tools vs the MCP-prefixed external names) and a duplicate tool set confuses the model and doubles index work. Pick one surface per profile — the native plugin is the recommended one (lifecycle hooks included).
 
+## Code Mode (PTC)
+
+The host's Code Mode (`run_code`, PTC transport) renders its SDK from **every tool visible in the agent's scope** — the native `graph_*` tools are in it automatically, no extra registration (verified against the host: `sdkSchemas(scope)` = scope-visible tools minus `run_code`; a plugin cannot and need not register a separate SDK channel). In a generated program the tools are called like any other:
+
+```ts
+// PTC program body (TypeScript flavor)
+const hits = await tools.graph_find_code({ query: 'token refresh race', source: true })
+const blast = await tools.graph_blast({ base: 'origin/main', depth: 3 })
+return [hits, blast].map(v => v.blastText ?? JSON.stringify(v).slice(0, 400)).join('\n')
+```
+
+Each tool's parameter and output schemas are projected into the SDK stubs, so `run_code` gets typed, validated calls. (P2c #4, v0.6.1: documented after the host check; a guard test pins the lossless-JSON output-schema contract every tool must keep for the SDK projection.)
+
 ## Languages & coexistence
 
 - **Language coverage** — the engine is TypeScript/JavaScript full-fidelity in this stack; Python and Go are supported, and unknown languages are skipped gracefully. The plugin does not promise 100% language coverage — an unrecognized file simply does not produce graph nodes. (An optional LSP pass, e.g. pyright/tsserver, is *not* wired in P0–P2a; it would be a heavy opt-in spawn behind a future flag.)

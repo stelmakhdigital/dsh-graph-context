@@ -1,6 +1,6 @@
 {
   "name": "dsh-context-graph",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Native DeepSeek Harness plugin: local repo context graph (engine: the external @nanonets/graft CLI) \u2014 tools + lifecycle inject + fail-open",
   "type": "module",
   "main": "lib/index.js",

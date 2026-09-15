@@ -34,6 +34,8 @@ exploration:
   calls (\`direction: out\`); \`depth > 1\` walks transitively (blast radius).
 - \`graph_find_all\` — regex search over indexed sources, ranked by coupling.
 - \`graph_check_freshness\` — drift report; call after larger edits.
+Code Mode (PTC): all graph tools are callable inside \`run_code\` programs
+  as \`await tools.graph_<name>(args)\` — the host SDK includes them automatically.
 - \`graph_blast\` — diff blast radius: the symbols the changed lines touch and the
   downstream dependents that may break (\`base\` to diff against a ref like
   \`origin/main\`). Use before refactoring / for "what breaks if I change X".

@@ -64,11 +64,11 @@ describe('cordis.yml.example — user overlay', () => {
     expect(row?.name).toBe('dsh-context-graph')
     // A patch replaces the ENTIRE config, so the example restates every key.
     expect(Object.keys(row?.config ?? {}).sort()).toEqual([
-      'autoBuild', 'autoSync', 'buildTimeoutMs', 'deep', 'editToolNames', 'graphPath',
-      'guardWiringReads', 'injectBlastRadius', 'injectMode', 'injectPromptHits',
-      'injectSessionMap', 'injectSubagentMap', 'maxInjectBytes', 'metrics',
-      'nudgeOnBlindSearch', 'promptMinChars', 'reinjectAfterCompaction',
-      'scopeFromLastEdit', 'timeoutMs', 'toolOrder', 'tools',
+      'autoBuild', 'autoSync', 'blastOnResume', 'buildTimeoutMs', 'deep',
+      'editToolNames', 'graphPath', 'guardWiringReads', 'injectBlastRadius',
+      'injectMode', 'injectPromptHits', 'injectSessionMap', 'injectSubagentMap',
+      'maxInjectBytes', 'metrics', 'nudgeOnBlindSearch', 'promptMinChars',
+      'reinjectAfterCompaction', 'scopeFromLastEdit', 'timeoutMs', 'toolOrder', 'tools',
     ].sort())
     expect(typeof row?.config.graphPath).toBe('string')
     expect(row?.config.graphPath).not.toBe('')

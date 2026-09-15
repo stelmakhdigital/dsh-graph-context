@@ -460,6 +460,24 @@ describe('tools.ts — graph_blast (P2c #3)', () => {
   })
 })
 
+describe('tools.ts — PTC / Code Mode readiness (P2c #4)', () => {
+  it('every tool carries a lossless-JSON output schema (host SDK projection requirement)', async () => {
+    const fake = fakeRunner(() => ({ json: MAP_JSON }))
+    const tools = makeTools(fake)
+    for (const tool of Object.values(tools)) {
+      expect(tool.output, tool.name).toBeTypeOf('object')
+      const schema = (tool.output as { schema?: unknown }).schema
+      expect(schema, `${tool.name}: output schema present`).toBeTypeOf('object')
+      // The host's PTC SDK projection (sdkSchemas) THROWS when the schema is
+      // not lossless JSON — pin that contract so a future tool cannot break
+      // Code Mode silently.
+      const roundTripped = JSON.parse(JSON.stringify(schema))
+      expect(roundTripped, `${tool.name}: lossless JSON`).toEqual(schema)
+      expect((roundTripped as { properties?: Record<string, unknown> }).properties?.ok, tool.name).toBeDefined()
+    }
+  })
+})
+
 describe('tools.ts — cwd resolution', () => {
   it('uses the session header cwd when present, process cwd as fallback', async () => {
     const fake = fakeRunner(() => ({ json: MAP_JSON }))
